@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String            @id @default(cuid())
+  email            String            @unique
+  name             String?
+  password         String
+  refreshTokenHash String?
+  createdAt        DateTime          @default(now())
+  conversations    Conversation[]
+  attachments      Attachment[]
+  feedback         MessageFeedback[]
+  documents        Document[]
+}
+
+model Conversation {
+  id                      String       @id @default(cuid())
+  userId                  String
+  user                    User         @relation(fields: [userId], references: [id])
+  title                   String?
+  activeLeafId            String?
+  historySummary          String?      @db.Text
+  historySummaryEmbedding Float[]
+  historySummaryMessages  Int          @default(0)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  messages                Message[]
+  attachments             Attachment[]
+
+  @@index([userId])
+}
+
+model Message {
+  id             String           @id @default(cuid())
+  conversationId String
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  parentId       String?
+  parent         Message?         @relation("MessageTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children       Message[]        @relation("MessageTree")
+  role           MessageRole
+  content        String           @db.Text
+  source         MessageSource?
+  metadata       Json?
+  summary        String?          @db.Text
+  feedback       MessageFeedback?
+  createdAt      DateTime         @default(now())
+
+  @@index([conversationId])
+  @@index([parentId])
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum MessageSource {
+  RAG
+  WEB_SEARCH
+  HYBRID
+  NONE
+}
+
+model Document {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  sourceUrl  String?
+  mongoDocId String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Attachment {
+  id             String            @id @default(cuid())
+  userId         String
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversationId String?
+  conversation   Conversation?     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  kind           String            @default("image")
+  filename       String
+  mimeType       String
+  size           Int
+  data           Bytes
+  parsedText     String            @db.Text
+  summary        String?           @db.Text
+  pageCount      Int?
+  chunks         AttachmentChunk[]
+  createdAt      DateTime          @default(now())
+
+  @@index([userId])
+  @@index([conversationId])
+}
+
+model AttachmentChunk {
+  id           String     @id @default(cuid())
+  attachmentId String
+  attachment   Attachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+  index        Int
+  location     String?
+  text         String     @db.Text
+  embedding    Float[]
+
+  @@index([attachmentId])
+}
+
+enum FeedbackRating {
+  LIKE
+  DISLIKE
+}
+
+model MessageFeedback {
+  id         String         @id @default(cuid())
+  messageId  String         @unique
+  message    Message        @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rating     FeedbackRating
+  categories String[]
+  reason     String?        @db.Text
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([rating])
+}

@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+.env.local
+*.log
+.DS_Store
+# Any env file (secrets) — only an example file may be committed.
+.env*
+!.env.example
+# Archives can contain copies of .env / secrets (prisma.zip did).
+*.zip
