@@ -22,6 +22,7 @@ import {
   LLM_KNOWLEDGE_TOOL_NAME,
   CANNOT_ANSWER_MARKER,
 } from "./tools/llmKnowledgeTool";
+import { documentService } from "../../document/document.service";
 import { env } from "../../../config/env";
 import { limits, clipText } from "../../../config/limits";
 import {
@@ -51,6 +52,19 @@ function isConversational(question: string): boolean {
   const trimmed = question.trim();
   if (trimmed.length === 0) return true;
   return CONVERSATIONAL_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+const KB_TERMS = /\b(knowledge\s?base|kb|(my|the|our)\s+(uploaded\s+)?(documents?|docs|files?))\b/i;
+const KB_LISTING_INTENT =
+  /\b(what|which|list|show|see|contains?|have|has|inside|available|uploaded|stored|there)\b/i;
+const KB_TOPIC_QUESTION =
+  /\b(about|regarding|say|says|explain|summari[sz]e|according|mention|mentions|how|why|when|where)\b/i;
+const KB_INVENTORY_MAX_WORDS = 14;
+
+function asksAboutKnowledgeBaseContents(question: string): boolean {
+  const q = question.trim();
+  if (q.split(/\s+/).filter(Boolean).length > KB_INVENTORY_MAX_WORDS) return false;
+  return KB_TERMS.test(q) && KB_LISTING_INTENT.test(q) && !KB_TOPIC_QUESTION.test(q);
 }
 
 const CLASSIFY_WORD_COUNT_LIMIT = 6;
@@ -155,8 +169,9 @@ function memoryContext(state: GraphStateType) {
   };
 }
 
-async function routeEntry(state: GraphStateType): Promise<"directAnswer" | "checkAmbiguity"> {
+async function routeEntry(state: GraphStateType): Promise<"directAnswer" | "checkAmbiguity" | "listKnowledgeBase"> {
   if (state.hasAttachments) return "checkAmbiguity";
+  if (asksAboutKnowledgeBaseContents(state.question)) return "listKnowledgeBase";
   return classifyEntry(state.question);
 }
 
@@ -165,6 +180,9 @@ async function checkAmbiguity(state: GraphStateType) {
   const response = await getChatModel(limits.ambiguityCheckMaxTokens).invoke([
     new SystemMessage(
       `You analyse the user's latest message in a conversation and do two things.\n\n` +
+        `Context: the user has a personal knowledge base of uploaded documents that the assistant can ` +
+        `search. Never mark a question ambiguous just because it mentions "the knowledge base", ` +
+        `"my documents" or "my files".\n\n` +
         `1. Standalone question: rewrite the latest message so it can be understood without the ` +
         `earlier conversation — resolve references like "it", "that", "the second one", "what ` +
         `about X?" using the conversation. Keep the user's intent and wording; don't answer it. ` +
@@ -246,6 +264,28 @@ async function askForClarification(state: GraphStateType) {
   return {
     question: clarified.success ? clarified.data : `${state.question} (${reply})`,
     clarification: "",
+  };
+}
+
+const KB_LIST_MAX = 50;
+
+async function listKnowledgeBase(state: GraphStateType) {
+  const documents = state.userId ? await documentService.findManyByUser(state.userId) : [];
+  const answer =
+    documents.length === 0
+      ? "Your knowledge base is empty right now. Upload documents from the Knowledge base page, " +
+        "then ask me questions about them."
+      : `Your knowledge base has ${documents.length} document${documents.length === 1 ? "" : "s"}:\n\n` +
+        documents
+          .slice(0, KB_LIST_MAX)
+          .map((d) => `- ${d.title} (added ${d.createdAt.toISOString().slice(0, 10)})`)
+          .join("\n") +
+        (documents.length > KB_LIST_MAX ? `\n- …and ${documents.length - KB_LIST_MAX} more` : "") +
+        "\n\nAsk me anything about them.";
+  return {
+    answer,
+    toolsUsed: [KNOWLEDGE_BASE_TOOL_NAME],
+    guardrail: { status: "skipped" as const, revisions: 0, issues: [] },
   };
 }
 
@@ -413,6 +453,7 @@ function answerDraft(state: GraphStateType): AnswerDraft {
 
 const graph = new StateGraph(GraphState)
   .addNode("directAnswer", directAnswer)
+  .addNode("listKnowledgeBase", listKnowledgeBase)
   .addNode("checkAmbiguity", checkAmbiguity)
   .addNode("askForClarification", askForClarification)
   .addNode("searchKnowledgeBase", searchKnowledgeBase)
@@ -424,7 +465,9 @@ const graph = new StateGraph(GraphState)
   .addConditionalEdges(START, routeEntry, {
     directAnswer: "directAnswer",
     checkAmbiguity: "checkAmbiguity",
+    listKnowledgeBase: "listKnowledgeBase",
   })
+  .addEdge("listKnowledgeBase", END)
   .addEdge("directAnswer", "checkAnswer")
   .addConditionalEdges("checkAmbiguity", routeAfterAmbiguityCheck, {
     askForClarification: "askForClarification",

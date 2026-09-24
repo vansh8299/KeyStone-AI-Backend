@@ -1,4 +1,3 @@
-import { PDFParse } from "pdf-parse";
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { getVisionModel } from "./chatModel";
@@ -6,6 +5,14 @@ import { traceConfig } from "../../../lib/langsmith";
 import { limits } from "../../../config/limits";
 
 const NO_TEXT = "NO_TEXT";
+
+const importPdfParse = () => import("pdf-parse").then((m) => m.PDFParse);
+let pdfParseClass: ReturnType<typeof importPdfParse> | null = null;
+function loadPdfParse() {
+  const loaded = pdfParseClass ?? importPdfParse();
+  pdfParseClass = loaded;
+  return loaded;
+}
 
 const ocrChain = () =>
   ChatPromptTemplate.fromMessages([
@@ -43,6 +50,7 @@ async function mapLimited<T, R>(items: T[], concurrency: number, task: (item: T)
 }
 
 export async function pdfPageCount(pdf: Buffer): Promise<number> {
+  const PDFParse = await loadPdfParse();
   const parser = new PDFParse({ data: new Uint8Array(pdf) });
   try {
     return (await parser.getInfo()).total;
@@ -55,6 +63,7 @@ export async function ocrPdfPages(pdf: Buffer, pageNumbers: number[]): Promise<M
   const texts = new Map<number, string>();
   if (pageNumbers.length === 0) return texts;
 
+  const PDFParse = await loadPdfParse();
   const parser = new PDFParse({ data: new Uint8Array(pdf) });
   let screenshots: { pageNumber: number; data: Uint8Array }[];
   try {
