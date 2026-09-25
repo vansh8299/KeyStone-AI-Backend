@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import type { User } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { conflictError, unauthenticatedError } from "../../shared/errors";
 import {
@@ -10,6 +11,13 @@ import {
   hashRefreshToken,
   refreshTokenMatches,
 } from "./auth.utils";
+
+/**
+ * How long a just-replaced refresh token is still accepted. Two tabs refreshing at once, or a
+ * refresh that was already in flight when the user logged in, present the previous token a moment
+ * after it was replaced. Treating that as theft would revoke the session the user just created.
+ */
+const REFRESH_REUSE_GRACE_MS = 60_000;
 
 const EMAIL_TAKEN = "An account with this email already exists. Try logging in instead.";
 
@@ -35,11 +43,18 @@ export interface TokenPair {
   refreshToken: string;
 }
 
+export interface RefreshResult {
+  user: User;
+  accessToken: string;
+  /** Absent when a just-replaced token was presented: the browser already holds the newer one. */
+  refreshToken?: string;
+}
+
 async function issueTokensForUser(userId: string): Promise<TokenPair> {
   const accessToken = signAccessToken(userId);
   const refreshToken = signRefreshToken(userId);
   const refreshTokenHash = hashRefreshToken(refreshToken);
-  await prisma.user.update({ where: { id: userId }, data: { refreshTokenHash } });
+  await prisma.user.update({ where: { id: userId }, data: { refreshTokenHash, refreshTokenIssuedAt: new Date() } });
   return { accessToken, refreshToken };
 }
 
@@ -69,7 +84,7 @@ export const authService = {
     return { user, ...tokens };
   },
 
-  async refresh(refreshTokenCookie: string | undefined) {
+  async refresh(refreshTokenCookie: string | undefined): Promise<RefreshResult | null> {
     if (!refreshTokenCookie) return null;
 
     const payload = verifyRefreshToken(refreshTokenCookie);
@@ -79,7 +94,16 @@ export const authService = {
     if (!user || !user.refreshTokenHash) return null;
 
     if (!refreshTokenMatches(refreshTokenCookie, user.refreshTokenHash)) {
-      await prisma.user.update({ where: { id: user.id }, data: { refreshTokenHash: null } });
+      const issuedAt = user.refreshTokenIssuedAt?.getTime();
+      const tokenIssuedAt = (payload.iat ?? 0) * 1000;
+      const justReplaced =
+        issuedAt !== undefined && tokenIssuedAt <= issuedAt && Date.now() - issuedAt < REFRESH_REUSE_GRACE_MS;
+      if (justReplaced) {
+        // Benign race: hand out a fresh access token but leave the current session untouched.
+        return { user, accessToken: signAccessToken(user.id) };
+      }
+      // An old token replayed long after it was replaced: assume theft and end the session.
+      await prisma.user.update({ where: { id: user.id }, data: { refreshTokenHash: null, refreshTokenIssuedAt: null } });
       return null;
     }
 
@@ -90,7 +114,7 @@ export const authService = {
   async logout(userId: string | null, refreshTokenCookie?: string) {
     const id = userId ?? (refreshTokenCookie ? verifyRefreshToken(refreshTokenCookie)?.userId : undefined);
     if (id) {
-      await prisma.user.updateMany({ where: { id }, data: { refreshTokenHash: null } });
+      await prisma.user.updateMany({ where: { id }, data: { refreshTokenHash: null, refreshTokenIssuedAt: null } });
     }
   },
 };

@@ -13,6 +13,9 @@ model User {
   name             String?
   password         String
   refreshTokenHash String?
+  /// When the current refresh token was issued; lets a just-replaced token be recognised as a
+  /// harmless concurrent refresh instead of token theft.
+  refreshTokenIssuedAt DateTime?
   createdAt        DateTime          @default(now())
   conversations    Conversation[]
   attachments      Attachment[]

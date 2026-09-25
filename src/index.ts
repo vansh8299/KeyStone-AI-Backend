@@ -6,7 +6,7 @@ import { ApolloServer } from "@apollo/server";
 import { expressMiddleware } from "@as-integrations/express5";
 import { ApolloServerPluginDrainHttpServer } from "@apollo/server/plugin/drainHttpServer";
 
-import { env } from "./config/env";
+import { env, isAllowedOrigin } from "./config/env";
 import { typeDefs } from "./graphql/typeDefs";
 import { buildResolvers } from "./graphql/resolvers";
 import { makeExecutableSchema } from "@graphql-tools/schema";
@@ -50,7 +50,7 @@ async function main() {
     {
       schema,
       validate: (schema, document, rules) => graphqlValidate(schema, document, [...(rules ?? specifiedRules), queryLimitsRule]),
-      onConnect: (ctx) => ctx.extra.request.headers.origin === env.frontendOrigin,
+      onConnect: (ctx) => isAllowedOrigin(ctx.extra.request.headers.origin),
       context: (ctx) => createSubscriptionContext(ctx.extra.request),
       onError: (_ctx, _id, _payload, errors) => formatGraphQLErrors(errors),
       onNext: (_ctx, _id, _payload, _args, result) =>
@@ -83,7 +83,9 @@ async function main() {
   app.use(
     "/graphql",
     cors<cors.CorsRequest>({
-      origin: env.frontendOrigin,
+      // Reflects the request's origin only when it's allowed; requests without one (curl,
+      // server-to-server) carry no browser cookies to protect, so they're let through as before.
+      origin: (origin, callback) => callback(null, !origin || isAllowedOrigin(origin)),
       credentials: true,
     }),
     cookieParser(),
