@@ -70,9 +70,10 @@ const baseCookieOptions = {
   path: "/",
 };
 
-export function setAuthCookies(res: Response, accessToken: string, refreshToken: string): void {
+export function setAuthCookies(res: Response, accessToken: string, refreshToken?: string): void {
   res.cookie("access_token", accessToken, { ...baseCookieOptions, maxAge: ACCESS_TOKEN_TTL_MS });
-  res.cookie("refresh_token", refreshToken, { ...baseCookieOptions, maxAge: REFRESH_TOKEN_TTL_MS });
+  // Omitted when the client already holds the current refresh token (see authService.refresh).
+  if (refreshToken) res.cookie("refresh_token", refreshToken, { ...baseCookieOptions, maxAge: REFRESH_TOKEN_TTL_MS });
 }
 
 export function clearAuthCookies(res: Response): void {

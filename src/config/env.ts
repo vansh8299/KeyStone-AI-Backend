@@ -99,12 +99,27 @@ process.env.LANGSMITH_TRACING = String(langsmithEnabled);
 process.env.LANGCHAIN_TRACING_V2 = String(langsmithEnabled);
 if (langsmithEnabled) process.env.LANGSMITH_PROJECT = e.LANGSMITH_PROJECT;
 
+const LOCAL_DEV_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+/**
+ * Whether a browser origin may call the API with credentials. Production allows exactly the
+ * configured origins; development also allows the frontend on any local port, because `next dev`
+ * silently moves to 3001, 3002… when 3000 is busy — and a mismatch there makes every request
+ * fail CORS, which the app used to mistake for being logged out.
+ */
+export function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return false;
+  if (env.frontendOrigins.includes(origin)) return true;
+  return !env.isProd && LOCAL_DEV_ORIGIN.test(origin);
+}
+
 export const env = {
   nodeEnv: e.NODE_ENV,
   isProd: e.NODE_ENV === "production",
   port: e.PORT,
   databaseUrl: e.DATABASE_URL,
-  frontendOrigin: e.FRONTEND_ORIGIN,
+  /** FRONTEND_ORIGIN may list several origins, comma-separated. */
+  frontendOrigins: e.FRONTEND_ORIGIN.split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean),
   trustProxy: e.TRUST_PROXY,
   accessTokenSecret: e.ACCESS_TOKEN_SECRET,
   refreshTokenSecret: e.REFRESH_TOKEN_SECRET,
