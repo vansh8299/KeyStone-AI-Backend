@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { limits } from "../../config/limits";
+import { singleLineText } from "../../shared/validate";
 
 const email = z
   .string()
   .trim()
+  .min(1, "is required")
   .max(limits.emailMaxChars, `must be at most ${limits.emailMaxChars} characters`)
   .email("must be a valid email address")
   .transform((e) => e.toLowerCase());
@@ -19,14 +21,18 @@ export const SignupArgsSchema = z.object({
   input: z.object({
     email,
     password: password.pipe(
-      z.string().min(limits.passwordMinChars, `must be at least ${limits.passwordMinChars} characters`)
+      z
+        .string()
+        .min(limits.passwordMinChars, `must be at least ${limits.passwordMinChars} characters`)
+        .refine((p) => p.trim().length > 0, { message: "can't be only spaces" })
+        .refine((p) => /\p{L}/u.test(p), { message: "must include at least one letter" })
+        .refine((p) => /\p{N}/u.test(p), { message: "must include at least one number" })
     ),
     name: z
       .string()
-      .trim()
-      .max(limits.nameMaxChars, `must be at most ${limits.nameMaxChars} characters`)
       .nullish()
-      .transform((n) => n || undefined),
+      .transform((n) => n?.trim() || undefined)
+      .pipe(singleLineText(limits.nameMaxChars).optional()),
   }),
 });
 

@@ -76,8 +76,12 @@ model Document {
   title      String
   sourceUrl  String?
   mongoDocId String?
+  /// SHA-256 of the ingested bytes; used to skip re-ingesting the same content.
+  /// Null for documents ingested before duplicate detection existed.
+  contentHash String?
   createdAt  DateTime @default(now())
 
+  @@unique([userId, contentHash])
   @@index([userId])
 }
 

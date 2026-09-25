@@ -7,15 +7,27 @@ import { notFoundError } from "../../shared/errors";
 import { prisma } from "../../lib/prisma";
 import { FEEDBACK_CATEGORIES, feedbackService } from "./feedback.service";
 
-const SetFeedbackArgsSchema = z.object({
-  messageId: idSchema,
-  rating: z.enum(["LIKE", "DISLIKE"]).nullish().transform((r) => r ?? null),
-  categories: z.array(z.enum(FEEDBACK_CATEGORIES)).max(FEEDBACK_CATEGORIES.length).nullish(),
-  reason: z
-    .string()
-    .max(limits.feedbackReasonMaxChars, `must be at most ${limits.feedbackReasonMaxChars} characters`)
-    .nullish(),
-});
+const SetFeedbackArgsSchema = z
+  .object({
+    messageId: idSchema,
+    rating: z.enum(["LIKE", "DISLIKE"]).nullish().transform((r) => r ?? null),
+    categories: z
+      .array(z.enum(FEEDBACK_CATEGORIES))
+      .max(FEEDBACK_CATEGORIES.length)
+      .nullish()
+      .transform((c) => (c ? [...new Set(c)] : c)),
+    reason: z
+      .string()
+      .max(limits.feedbackReasonMaxChars, `must be at most ${limits.feedbackReasonMaxChars} characters`)
+      .nullish()
+      .transform((r) => (r == null ? r : r.trim() || null)),
+  })
+  .superRefine((args, ctx) => {
+    const hasDetails = (args.categories?.length ?? 0) > 0 || Boolean(args.reason);
+    if (hasDetails && args.rating !== "DISLIKE") {
+      ctx.addIssue({ code: "custom", path: ["rating"], message: "Reasons can only be added to a dislike." });
+    }
+  });
 
 type MessageParent = { id: string; feedback?: unknown };
 

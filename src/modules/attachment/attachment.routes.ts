@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import { verifyAccessToken } from "../auth/auth.utils";
 import { attachmentService } from "./attachment.service";
 import { ErrorCode } from "../../shared/errors";
+import { idSchema } from "../../shared/validate";
 
 export const attachmentRouter = Router();
 
@@ -15,7 +16,8 @@ attachmentRouter.get("/attachments/:id", cookieParser(), async (req, res, next) 
       return;
     }
 
-    const attachment = await attachmentService.findForUser(String(req.params.id), userId);
+    const id = idSchema.safeParse(req.params.id);
+    const attachment = id.success ? await attachmentService.findForUser(id.data, userId) : null;
     if (!attachment) {
       res.status(404).json({ errors: [{ message: "File not found.", extensions: { code: ErrorCode.NOT_FOUND } }] });
       return;

@@ -2,15 +2,14 @@ import { GraphQLContext } from "../../context";
 import { requireAuth } from "../../shared/requireAuth";
 import { messageService } from "./message.service";
 import { conversationService } from "../conversation/conversation.service";
+import { ConversationIdArgsSchema } from "../conversation/conversation.schemas";
+import { parseInput } from "../../shared/validate";
 
 export const messageController = {
   Query: {
-    messages: async (
-      _: unknown,
-      { conversationId }: { conversationId: string },
-      ctx: GraphQLContext
-    ) => {
+    messages: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
+      const { conversationId } = parseInput(ConversationIdArgsSchema, args);
       await conversationService.requireOwned(conversationId, userId);
       return messageService.findManyByConversation(conversationId);
     },

@@ -9,6 +9,10 @@ import { runChatTurn, streamChatTurn, attachToChatTurn, AgentStreamEvent } from 
 import { similaritySearchWithScore } from "./langchain/vectorStore";
 import { getUploadScalar } from "../../lib/graphqlUpload";
 import { parseInput } from "../../shared/validate";
+import { badUserInputError } from "../../shared/errors";
+import { limits } from "../../config/limits";
+import { checkUploadFilename, readUploadLimited, type UploadPayload } from "../../shared/upload";
+import { detectFileCategory } from "./loaders/fileType";
 import {
   AskAgentArgsSchema,
   ConversationTurnArgsSchema,
@@ -34,18 +38,6 @@ const searchLimiter = createRateLimiter({
   message: "Too many searches. Please wait a moment and try again.",
 });
 
-interface UploadPayload {
-  filename: string;
-  createReadStream: () => NodeJS.ReadableStream;
-}
-
-async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks);
-}
 
 export async function createRagController() {
   const Upload: GraphQLScalarType = await getUploadScalar();
@@ -79,8 +71,16 @@ export async function createRagController() {
         ingestLimiter.consume(`user:${userId}`);
         const { sourceUrl } = parseInput(IngestFileArgsSchema, args);
         const upload = await file;
-        const buffer = await streamToBuffer(upload.createReadStream());
-        return ingestService.ingestFile({ userId, filename: upload.filename, buffer, sourceUrl });
+        const filename = checkUploadFilename(upload.filename);
+        if (detectFileCategory(filename) === "unsupported") {
+          upload.createReadStream().destroy?.();
+          throw badUserInputError(
+            `Unsupported file type for "${filename}". Supported: pdf, docx, doc, txt, md, rtf, xlsx, xls, csv.`,
+            { field: "file" }
+          );
+        }
+        const buffer = await readUploadLimited(upload.createReadStream(), limits.ingestFileMaxBytes);
+        return ingestService.ingestFile({ userId, filename, buffer, sourceUrl });
       },
 
       ingestText: (_: unknown, args: unknown, ctx: GraphQLContext) => {

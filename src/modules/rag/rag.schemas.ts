@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { limits } from "../../config/limits";
-import { boundedText, idSchema, optionalUrlSchema } from "../../shared/validate";
+import { boundedText, idSchema, optionalUrlSchema, singleLineText } from "../../shared/validate";
 
 export const AskAgentArgsSchema = z
   .object({
@@ -53,7 +53,7 @@ export const IngestFileArgsSchema = z.object({
 
 export const IngestTextArgsSchema = z.object({
   input: z.object({
-    title: boundedText(limits.ingestTitleMaxChars),
+    title: singleLineText(limits.ingestTitleMaxChars),
     content: boundedText(limits.ingestTextMaxChars),
     sourceUrl: optionalUrlSchema,
   }),

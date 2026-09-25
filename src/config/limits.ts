@@ -12,6 +12,7 @@ export const limits = {
   emailMaxChars: 254,
   passwordMinChars: 8,
   passwordMaxBytes: 72,
+  ingestFileMaxBytes: 25 * 1024 * 1024,
 
   kbContextMaxChars: 16_000,
   webResultsMaxChars: 12_000,

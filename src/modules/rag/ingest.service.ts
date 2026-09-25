@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { prisma } from "../../lib/prisma";
 import { limits } from "../../config/limits";
-import { badUserInputError } from "../../shared/errors";
+import { badUserInputError, conflictError } from "../../shared/errors";
 import { documentService } from "../document/document.service";
 import { detectFileCategory } from "./loaders/fileType";
 import { convertToPdfBuffer } from "./loaders/convertToPdf";
@@ -13,6 +14,18 @@ export interface IngestFileInput {
   filename: string;
   buffer: Buffer;
   sourceUrl?: string;
+}
+
+export function contentHash(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+function duplicateError(existingTitle: string) {
+  return conflictError(`This content is already in your knowledge base as "${existingTitle}".`);
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "P2002";
 }
 
 function cleanFilename(filename: string): string {
@@ -30,9 +43,28 @@ export const ingestService = {
       );
     }
 
-    const document = await prisma.document.create({
-      data: { userId: input.userId, title: input.filename, sourceUrl: input.sourceUrl },
+    // Checked before any chunking / embedding so a duplicate costs nothing but the hash.
+    const hash = contentHash(input.buffer);
+    const existing = await prisma.document.findUnique({
+      where: { userId_contentHash: { userId: input.userId, contentHash: hash } },
+      select: { title: true },
     });
+    if (existing) throw duplicateError(existing.title);
+
+    let document;
+    try {
+      document = await prisma.document.create({
+        data: { userId: input.userId, title: input.filename, sourceUrl: input.sourceUrl, contentHash: hash },
+      });
+    } catch (err) {
+      // Two identical uploads raced past the check above; the unique index caught the second.
+      if (!isUniqueViolation(err)) throw err;
+      const winner = await prisma.document.findUnique({
+        where: { userId_contentHash: { userId: input.userId, contentHash: hash } },
+        select: { title: true },
+      });
+      throw duplicateError(winner?.title ?? input.filename);
+    }
 
     try {
       const baseMetadata = {
