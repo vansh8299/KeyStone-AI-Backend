@@ -7,6 +7,8 @@ export const documentTypeDefs = gql`
     title: String!
     sourceUrl: String
     mongoDocId: String
+    "SHA-256 (hex) of the ingested content; null for documents added before duplicate detection."
+    contentHash: String
     createdAt: DateTime!
   }
 

@@ -1,7 +1,7 @@
 import { GraphQLContext } from "../../context";
 import { requireAuth } from "../../shared/requireAuth";
 import { conversationService } from "./conversation.service";
-import { parseInput } from "../../shared/validate";
+import { IdArgsSchema, parseInput, singleLineText } from "../../shared/validate";
 import { BranchArgsSchema } from "./conversation.schemas";
 import { feedbackService } from "../feedback/feedback.service";
 import { createRateLimiter } from "../../shared/rateLimit";
@@ -19,9 +19,9 @@ const CreateConversationArgsSchema = z.object({
     .object({
       title: z
         .string()
-        .trim()
-        .max(limits.conversationTitleMaxChars, `must be at most ${limits.conversationTitleMaxChars} characters`)
-        .nullish(),
+        .nullish()
+        .transform((t) => t?.trim() || undefined)
+        .pipe(singleLineText(limits.conversationTitleMaxChars).optional()),
     })
     .nullish(),
 });
@@ -33,8 +33,9 @@ export const conversationController = {
       return conversationService.findManyByUser(userId);
     },
 
-    conversation: (_: unknown, { id }: { id: string }, ctx: GraphQLContext) => {
+    conversation: (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
+      const { id } = parseInput(IdArgsSchema, args);
       return conversationService.requireOwned(id, userId);
     },
   },
@@ -46,14 +47,16 @@ export const conversationController = {
       return conversationService.create({ userId, title: input?.title || undefined });
     },
 
-    deleteConversation: async (_: unknown, { id }: { id: string }, ctx: GraphQLContext) => {
+    deleteConversation: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
+      const { id } = parseInput(IdArgsSchema, args);
       await conversationService.requireOwned(id, userId);
       return conversationService.delete(id);
     },
 
-    generateConversationTitle: async (_: unknown, { id }: { id: string }, ctx: GraphQLContext) => {
+    generateConversationTitle: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
+      const { id } = parseInput(IdArgsSchema, args);
       titleLimiter.consume(`user:${userId}`);
       await conversationService.requireOwned(id, userId);
       return conversationService.generateTitle(id);
