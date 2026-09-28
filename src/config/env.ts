@@ -16,6 +16,13 @@ const EnvSchema = z.object({
   ACCESS_TOKEN_SECRET: withDefault("dev_access_secret_change_me"),
   REFRESH_TOKEN_SECRET: withDefault("dev_refresh_secret_change_me"),
 
+  SMTP_HOST: optionalString,
+  SMTP_PORT: numberWithDefault(587).pipe(z.number().int().positive()),
+  SMTP_SECURE: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["true", "false"]).optional()),
+  SMTP_USER: optionalString,
+  SMTP_PASS: optionalString,
+  MAIL_FROM: withDefault("Keystone AI <no-reply@keystone.local>"),
+
   MONGODB_URI: z.string().min(1),
   MONGODB_DB_NAME: withDefault("rag_chat"),
   MONGODB_COLLECTION: withDefault("document_chunks"),
@@ -91,6 +98,11 @@ if (e.NODE_ENV === "production") {
   console.warn("Using weak development JWT secrets — set ACCESS_TOKEN_SECRET / REFRESH_TOKEN_SECRET before deploying.");
 }
 
+if (!e.SMTP_HOST) {
+  const where = e.NODE_ENV === "production" ? "sign-up and password reset will fail" : "codes are printed to the console";
+  console.warn(`SMTP_HOST is not set — verification emails can't be sent; ${where}.`);
+}
+
 const langsmithEnabled = e.LANGSMITH_TRACING === "true" && Boolean(e.LANGSMITH_API_KEY);
 if (e.LANGSMITH_TRACING === "true" && !e.LANGSMITH_API_KEY) {
   console.warn("LANGSMITH_TRACING=true but LANGSMITH_API_KEY is missing — LangSmith tracing is off.");
@@ -123,6 +135,16 @@ export const env = {
   trustProxy: e.TRUST_PROXY,
   accessTokenSecret: e.ACCESS_TOKEN_SECRET,
   refreshTokenSecret: e.REFRESH_TOKEN_SECRET,
+
+  smtp: {
+    host: e.SMTP_HOST,
+    port: e.SMTP_PORT,
+    /** Implicit TLS; defaults to on for port 465, otherwise STARTTLS is negotiated. */
+    secure: e.SMTP_SECURE ? e.SMTP_SECURE === "true" : e.SMTP_PORT === 465,
+    user: e.SMTP_USER,
+    pass: e.SMTP_PASS,
+  },
+  mailFrom: e.MAIL_FROM,
 
   mongodbUri: e.MONGODB_URI,
   mongodbDbName: e.MONGODB_DB_NAME,
