@@ -16,6 +16,8 @@ const EnvSchema = z.object({
   ACCESS_TOKEN_SECRET: withDefault("dev_access_secret_change_me"),
   REFRESH_TOKEN_SECRET: withDefault("dev_refresh_secret_change_me"),
 
+  MAIL_TRIGGER_URL: optionalString,
+  MAIL_TRIGGER_SECRET: optionalString,
   SMTP_HOST: optionalString,
   SMTP_PORT: numberWithDefault(587).pipe(z.number().int().positive()),
   SMTP_SECURE: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["true", "false"]).optional()),
@@ -98,9 +100,12 @@ if (e.NODE_ENV === "production") {
   console.warn("Using weak development JWT secrets — set ACCESS_TOKEN_SECRET / REFRESH_TOKEN_SECRET before deploying.");
 }
 
-if (!e.SMTP_HOST) {
+if (e.MAIL_TRIGGER_URL && !e.MAIL_TRIGGER_SECRET) {
+  throw new Error("Invalid environment variables:\n  - MAIL_TRIGGER_SECRET is required when MAIL_TRIGGER_URL is set");
+}
+if (!e.MAIL_TRIGGER_URL && !e.SMTP_HOST) {
   const where = e.NODE_ENV === "production" ? "sign-up and password reset will fail" : "codes are printed to the console";
-  console.warn(`SMTP_HOST is not set — verification emails can't be sent; ${where}.`);
+  console.warn(`Neither MAIL_TRIGGER_URL nor SMTP_HOST is set — verification emails can't be sent; ${where}.`);
 }
 
 const langsmithEnabled = e.LANGSMITH_TRACING === "true" && Boolean(e.LANGSMITH_API_KEY);
@@ -136,6 +141,8 @@ export const env = {
   accessTokenSecret: e.ACCESS_TOKEN_SECRET,
   refreshTokenSecret: e.REFRESH_TOKEN_SECRET,
 
+  /** Google Apps Script web app that sends mail over HTTPS; preferred over SMTP when set. */
+  mailTrigger: e.MAIL_TRIGGER_URL ? { url: e.MAIL_TRIGGER_URL, secret: e.MAIL_TRIGGER_SECRET! } : null,
   smtp: {
     host: e.SMTP_HOST,
     port: e.SMTP_PORT,
