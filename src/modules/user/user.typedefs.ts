@@ -6,7 +6,11 @@ export const userTypeDefs = gql`
     email: String!
     name: String
     createdAt: DateTime!
-    conversations: [Conversation!]!
+    """
+    Your conversations, most recently active first, a page at a time: \`first\` (default and
+    maximum 100) and \`after\` (the last conversation ID of the previous page).
+    """
+    conversations(first: Int, after: ID): [Conversation!]!
   }
 
   type Query {

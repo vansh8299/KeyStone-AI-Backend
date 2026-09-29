@@ -2,7 +2,16 @@ import { unauthenticatedError } from "../shared/errors";
 
 const PUBLIC_OPERATIONS: Record<string, ReadonlySet<string>> = {
   Query: new Set(["me"]),
-  Mutation: new Set(["signup", "login", "refreshToken", "logout"]),
+  Mutation: new Set([
+    "signup",
+    "verifyEmail",
+    "resendVerificationCode",
+    "login",
+    "requestPasswordReset",
+    "resetPassword",
+    "refreshToken",
+    "logout",
+  ]),
   Subscription: new Set(),
 };
 

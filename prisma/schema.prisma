@@ -8,19 +8,42 @@ datasource db {
 }
 
 model User {
-  id               String            @id @default(cuid())
-  email            String            @unique
-  name             String?
-  password         String
-  refreshTokenHash String?
+  id                   String            @id @default(cuid())
+  email                String            @unique
+  name                 String?
+  password             String
+  refreshTokenHash     String?
   /// When the current refresh token was issued; lets a just-replaced token be recognised as a
   /// harmless concurrent refresh instead of token theft.
   refreshTokenIssuedAt DateTime?
-  createdAt        DateTime          @default(now())
-  conversations    Conversation[]
-  attachments      Attachment[]
-  feedback         MessageFeedback[]
-  documents        Document[]
+  /// Set once the user proves they own `email` with a one-time code.
+  emailVerified        Boolean           @default(false)
+  createdAt            DateTime          @default(now())
+  conversations        Conversation[]
+  attachments          Attachment[]
+  feedback             MessageFeedback[]
+  documents            Document[]
+  emailOtps            EmailOtp[]
+}
+
+enum OtpPurpose {
+  VERIFY_EMAIL
+  RESET_PASSWORD
+}
+
+/// The latest one-time code emailed to a user for a purpose. Only a hash is stored; requesting
+/// a new code replaces the old one.
+model EmailOtp {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   OtpPurpose
+  codeHash  String
+  attempts  Int        @default(0)
+  expiresAt DateTime
+  createdAt DateTime   @default(now())
+
+  @@unique([userId, purpose])
 }
 
 model Conversation {
@@ -73,16 +96,16 @@ enum MessageSource {
 }
 
 model Document {
-  id         String   @id @default(cuid())
-  userId     String?
-  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title      String
-  sourceUrl  String?
-  mongoDocId String?
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  sourceUrl   String?
+  mongoDocId  String?
   /// SHA-256 of the ingested bytes; used to skip re-ingesting the same content.
   /// Null for documents ingested before duplicate detection existed.
   contentHash String?
-  createdAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   @@unique([userId, contentHash])
   @@index([userId])

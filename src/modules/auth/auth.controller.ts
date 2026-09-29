@@ -4,19 +4,42 @@ import { createRateLimiter } from "../../shared/rateLimit";
 import { authService } from "./auth.service";
 import { setAuthCookies, clearAuthCookies } from "./auth.utils";
 import { parseInput } from "../../shared/validate";
-import { SignupArgsSchema, LoginArgsSchema } from "./auth.schemas";
+import {
+  SignupArgsSchema,
+  LoginArgsSchema,
+  EmailArgsSchema,
+  VerifyEmailArgsSchema,
+  ResetPasswordArgsSchema,
+} from "./auth.schemas";
 
 const loginLimiter = createRateLimiter({
+  name: "login",
   limit: 10,
   windowMs: 15 * 60 * 1000,
   message: "Too many login attempts. Please wait a few minutes and try again.",
 });
 const signupLimiter = createRateLimiter({
+  name: "signup",
   limit: 5,
   windowMs: 60 * 60 * 1000,
   message: "Too many sign-up attempts. Please try again later.",
 });
+// Sending email costs money and can be used to spam someone's inbox.
+const sendCodeLimiter = createRateLimiter({
+  name: "send-code",
+  limit: 5,
+  windowMs: 60 * 60 * 1000,
+  message: "Too many codes requested. Please try again later.",
+});
+// Per-code attempts are also capped in otpService; this stops guessing across fresh codes.
+const verifyCodeLimiter = createRateLimiter({
+  name: "verify-code",
+  limit: 15,
+  windowMs: 15 * 60 * 1000,
+  message: "Too many attempts. Please wait a few minutes and try again.",
+});
 const refreshLimiter = createRateLimiter({
+  name: "refresh",
   limit: 60,
   windowMs: 15 * 60 * 1000,
   message: "Too many requests. Please try again in a few minutes.",
@@ -29,25 +52,55 @@ function clientIp(ctx: GraphQLContext): string {
 export const authController = {
   Mutation: {
     signup: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
-      signupLimiter.consume(`ip:${clientIp(ctx)}`);
+      await signupLimiter.consume(`ip:${clientIp(ctx)}`);
       const { input } = parseInput(SignupArgsSchema, args);
-      const { user, accessToken, refreshToken } = await authService.signup(input);
+      await sendCodeLimiter.consume(`email:${input.email}`);
+      return authService.signup(input);
+    },
+
+    verifyEmail: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
+      const { input } = parseInput(VerifyEmailArgsSchema, args);
+      await verifyCodeLimiter.consume(`ip:${clientIp(ctx)}`, `email:${input.email}`);
+      const { user, accessToken, refreshToken } = await authService.verifyEmail(input);
       setAuthCookies(ctx.res, accessToken, refreshToken);
       return { user };
+    },
+
+    resendVerificationCode: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
+      const { email } = parseInput(EmailArgsSchema, args);
+      await sendCodeLimiter.consume(`ip:${clientIp(ctx)}`, `email:${email}`);
+      await authService.resendVerification(email);
+      return true;
+    },
+
+    requestPasswordReset: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
+      const { email } = parseInput(EmailArgsSchema, args);
+      await sendCodeLimiter.consume(`ip:${clientIp(ctx)}`, `email:${email}`);
+      await authService.requestPasswordReset(email);
+      return true;
+    },
+
+    resetPassword: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
+      const { input } = parseInput(ResetPasswordArgsSchema, args);
+      await verifyCodeLimiter.consume(`ip:${clientIp(ctx)}`, `email:${input.email}`);
+      await authService.resetPassword(input);
+      // The reset signed out every session, including this browser's.
+      clearAuthCookies(ctx.res);
+      return true;
     },
 
     login: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const { input } = parseInput(LoginArgsSchema, args);
       const accountKey = `email:${input.email.toLowerCase()}`;
-      loginLimiter.consume(`ip:${clientIp(ctx)}`, accountKey);
+      await loginLimiter.consume(`ip:${clientIp(ctx)}`, accountKey);
       const { user, accessToken, refreshToken } = await authService.login(input);
-      loginLimiter.reset(accountKey);
+      await loginLimiter.reset(accountKey);
       setAuthCookies(ctx.res, accessToken, refreshToken);
       return { user };
     },
 
     refreshToken: async (_: unknown, __: unknown, ctx: GraphQLContext) => {
-      refreshLimiter.consume(`ip:${clientIp(ctx)}`);
+      await refreshLimiter.consume(`ip:${clientIp(ctx)}`);
       const result = await authService.refresh(ctx.req.cookies?.refresh_token);
       if (!result) {
         clearAuthCookies(ctx.res);

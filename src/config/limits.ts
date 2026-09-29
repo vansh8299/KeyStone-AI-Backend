@@ -12,6 +12,10 @@ export const limits = {
   emailMaxChars: 254,
   passwordMinChars: 8,
   passwordMaxBytes: 72,
+  otpLength: 6,
+  otpTtlMs: 10 * 60 * 1000,
+  otpMaxAttempts: 5,
+  otpResendCooldownMs: 60 * 1000,
   ingestFileMaxBytes: 25 * 1024 * 1024,
 
   kbContextMaxChars: 16_000,

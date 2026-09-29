@@ -23,16 +23,19 @@ import {
 } from "./rag.schemas";
 
 const chatTurnLimiter = createRateLimiter({
+  name: "chat-turn",
   limit: 30,
   windowMs: 5 * 60 * 1000,
   message: "You're sending messages very quickly. Please wait a few minutes and try again.",
 });
 const ingestLimiter = createRateLimiter({
+  name: "ingest",
   limit: 20,
   windowMs: 10 * 60 * 1000,
   message: "You've added a lot to the knowledge base in a short time. Please wait a few minutes.",
 });
 const searchLimiter = createRateLimiter({
+  name: "search",
   limit: 60,
   windowMs: 60 * 1000,
   message: "Too many searches. Please wait a moment and try again.",
@@ -48,7 +51,7 @@ export async function createRagController() {
     Query: {
       searchDocuments: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
         const userId = requireAuth(ctx);
-        searchLimiter.consume(`user:${userId}`);
+        await searchLimiter.consume(`user:${userId}`);
         const { query, topK } = parseInput(SearchDocumentsArgsSchema, args);
         const results = await similaritySearchWithScore(query, await documentService.idsForUser(userId), topK ?? 5);
         return results.map(({ document, score }) => ({
@@ -68,7 +71,7 @@ export async function createRagController() {
         ctx: GraphQLContext
       ) => {
         const userId = requireAuth(ctx);
-        ingestLimiter.consume(`user:${userId}`);
+        await ingestLimiter.consume(`user:${userId}`);
         const { sourceUrl } = parseInput(IngestFileArgsSchema, args);
         const upload = await file;
         const filename = checkUploadFilename(upload.filename);
@@ -83,9 +86,9 @@ export async function createRagController() {
         return ingestService.ingestFile({ userId, filename, buffer, sourceUrl });
       },
 
-      ingestText: (_: unknown, args: unknown, ctx: GraphQLContext) => {
+      ingestText: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
         const userId = requireAuth(ctx);
-        ingestLimiter.consume(`user:${userId}`);
+        await ingestLimiter.consume(`user:${userId}`);
         const { input } = parseInput(IngestTextArgsSchema, args);
         return ingestService.ingestText({ ...input, userId });
       },
@@ -96,18 +99,18 @@ export async function createRagController() {
         return ingestService.deleteIngested(documentId, userId);
       },
 
-      askAgent: (_: unknown, args: unknown, ctx: GraphQLContext) => {
+      askAgent: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
         const userId = requireAuth(ctx);
-        chatTurnLimiter.consume(`user:${userId}`);
+        await chatTurnLimiter.consume(`user:${userId}`);
         return runChatTurn({ userId, ...parseInput(AskAgentArgsSchema, args) });
       },
     },
 
     Subscription: {
       askAgentStream: {
-        subscribe: (_: unknown, args: unknown, ctx: SubscriptionContext) => {
+        subscribe: async (_: unknown, args: unknown, ctx: SubscriptionContext) => {
           if (!ctx.userId) throw unauthenticatedError();
-          chatTurnLimiter.consume(`user:${ctx.userId}`);
+          await chatTurnLimiter.consume(`user:${ctx.userId}`);
           return streamChatTurn({ userId: ctx.userId, ...parseInput(AskAgentArgsSchema, args) });
         },
         resolve: (event: AgentStreamEvent) => event,

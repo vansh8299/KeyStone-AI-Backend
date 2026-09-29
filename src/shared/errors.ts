@@ -6,6 +6,7 @@ export const ErrorCode = {
   NOT_FOUND: "NOT_FOUND",
   BAD_USER_INPUT: "BAD_USER_INPUT",
   CONFLICT: "CONFLICT",
+  EMAIL_NOT_VERIFIED: "EMAIL_NOT_VERIFIED",
   RATE_LIMITED: "RATE_LIMITED",
   PAYLOAD_TOO_LARGE: "PAYLOAD_TOO_LARGE",
   SERVICE_UNAVAILABLE: "SERVICE_UNAVAILABLE",
@@ -35,6 +36,14 @@ export function badUserInputError(message: string, extensions: { field?: string 
 
 export function conflictError(message: string): GraphQLError {
   return appError(ErrorCode.CONFLICT, message);
+}
+
+export function emailNotVerifiedError(email: string): GraphQLError {
+  return appError(
+    ErrorCode.EMAIL_NOT_VERIFIED,
+    "Please verify your email address. We've sent a code to your inbox.",
+    { email }
+  );
 }
 
 export function rateLimitedError(message: string, retryAfterSeconds?: number): GraphQLError {

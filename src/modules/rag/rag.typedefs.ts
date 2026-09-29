@@ -37,14 +37,16 @@ export const ragTypeDefs = gql`
     CONVERSATION
     "A piece of answer text, in order. Has text."
     TOKEN
-    "Progress of the output guardrail while the answer is held back for review. Has status."
+    "Progress of the output guardrail review. Has status."
     STATUS
+    "Discard the text received so far: the review rejected the draft, and the approved answer follows."
+    RESET
     "The turn finished and the reply is saved. Has result (authoritative final answer)."
     DONE
   }
 
   enum AgentStatus {
-    "A drafted answer is being reviewed before it's shown."
+    "The drafted answer (already streamed) is being reviewed."
     CHECKING_ANSWER
     "The review rejected the draft; it's being rewritten (then reviewed again)."
     IMPROVING_ANSWER
@@ -102,7 +104,8 @@ export const ragTypeDefs = gql`
     Same as askAgent, but streams the reply over WebSocket (graphql-ws): a CONVERSATION event,
     TOKEN events as the answer is generated, then DONE with the saved reply. Clarifying questions
     (human in the loop) arrive only in DONE, with no TOKEN events. With output guardrails on, the
-    answer arrives as TOKEN only once approved, preceded by STATUS events while it's reviewed.
+    draft still streams as TOKEN events and is reviewed afterwards (STATUS); if the review rejects
+    it, RESET withdraws the streamed text and the approved answer follows as TOKEN.
     """
     askAgentStream(
       question: String

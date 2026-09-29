@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import { prisma } from "../../lib/prisma";
 import { notFoundError, badUserInputError } from "../../shared/errors";
 import { conversationService } from "../conversation/conversation.service";
@@ -19,6 +20,7 @@ import { KNOWLEDGE_BASE_TOOL_NAME } from "./langchain/tools/knowledgeBaseSearchT
 import { WEB_SEARCH_TOOL_NAME } from "./langchain/tools/webSearchTool";
 import { getHitl, HitlMetadata } from "./hitl";
 import { limits } from "../../config/limits";
+import { documentService } from "../document/document.service";
 import { ActiveTurn, activeTurns } from "./activeTurns";
 import {
   attachmentService,
@@ -49,6 +51,8 @@ export interface ChatTurnInput {
   onConversation?: (conversationId: string) => void;
   onToken?: TokenHandler;
   onStatus?: StatusHandler;
+  /** The text streamed so far was withdrawn (the reviewer asked for a revision). */
+  onReset?: () => void;
 }
 
 export interface ChatTurnResult {
@@ -64,15 +68,16 @@ export type AgentStreamEvent =
   | { type: "CONVERSATION"; conversationId: string }
   | { type: "TOKEN"; text: string }
   | { type: "STATUS"; status: AgentStatus }
+  | { type: "RESET" }
   | { type: "DONE"; conversationId: string; result: ChatTurnResult };
 
 export function streamChatTurn(
-  input: Omit<ChatTurnInput, "onConversation" | "onToken" | "onStatus">
+  input: Omit<ChatTurnInput, "onConversation" | "onToken" | "onStatus" | "onReset">
 ): AsyncGenerator<AgentStreamEvent> {
   const turn = new ActiveTurn(input.userId);
   let conversationId: string | null = null;
 
-  runChatTurn({
+  const work = runChatTurn({
     ...input,
     onConversation: (id) => {
       conversationId = id;
@@ -81,20 +86,21 @@ export function streamChatTurn(
     },
     onToken: (text) => turn.publish({ type: "TOKEN", text }),
     onStatus: (status) => turn.publish({ type: "STATUS", status }),
+    onReset: () => turn.publish({ type: "RESET" }),
   })
     .then((result) => turn.publish({ type: "DONE", conversationId: result.conversationId, result }))
     .catch((err) => turn.fail(err))
     .finally(() => {
       if (conversationId) activeTurns.release(conversationId, turn);
     });
+  activeTurns.track(work);
 
   return turn.events();
 }
 
 export async function* attachToChatTurn(userId: string, conversationId: string): AsyncGenerator<AgentStreamEvent> {
-  const turn = activeTurns.find(conversationId, userId);
-  if (!turn) return;
-  const events = turn.events();
+  const events = await activeTurns.follow(conversationId, userId);
+  if (!events) return;
   yield { type: "CONVERSATION", conversationId };
   yield* events;
 }
@@ -109,6 +115,7 @@ export async function runChatTurn({
   onConversation,
   onToken,
   onStatus,
+  onReset,
 }: ChatTurnInput): Promise<ChatTurnResult> {
   const newAttachments =
     attachmentIds != null && !regenerateMessageId
@@ -117,10 +124,15 @@ export async function runChatTurn({
 
   let convoId: string;
   let activeLeafId: string | null = null;
+  let tree: Awaited<ReturnType<typeof loadTree>> | null = null;
   if (conversationId) {
+    // Load the tree alongside the ownership check; it's only used once ownership is confirmed.
+    const treeLoad = loadTree(conversationId);
+    treeLoad.catch(() => {});
     const existing = await conversationService.requireOwned(conversationId, userId);
     convoId = existing.id;
     activeLeafId = existing.activeLeafId;
+    tree = await treeLoad;
   } else {
     if (editMessageId || regenerateMessageId) {
       throw badUserInputError("conversationId is required to edit or regenerate a message");
@@ -128,8 +140,6 @@ export async function runChatTurn({
     const conversation = await conversationService.create({ userId });
     convoId = conversation.id;
   }
-
-  const tree = conversationId ? await loadTree(convoId) : null;
 
   let parentId: string | null;
   let existingUserMessage: { id: string; content: string; metadata: unknown } | null = null;
@@ -167,10 +177,12 @@ export async function runChatTurn({
   const documentIds = [
     ...new Set([...documentIdsOf([{ metadata: { attachments } }]), ...documentIdsOf(branch)]),
   ].slice(0, limits.documentsPerConversation);
-  const [shortTerm, pastConversations, documents] = await Promise.all([
+  const [shortTerm, pastConversations, documents, knowledgeBaseDocumentIds] = await Promise.all([
     buildShortTermMemory(branch),
     retrievePastConversations(userId, convoId, agentQuestion),
     attachmentService.documentContext(documentIds, agentQuestion),
+    // Fetched now, alongside the memory, rather than mid-answer by the knowledge-base search.
+    documentService.idsForUser(userId),
   ]);
   const memory = {
     userId,
@@ -180,6 +192,7 @@ export async function runChatTurn({
     attachedDocuments: documents.context,
     documentOverview: documents.overview,
     hasAttachments: attachments.length > 0,
+    knowledgeBaseDocumentIds,
   };
 
   const previous = branch[branch.length - 1];
@@ -188,28 +201,31 @@ export async function runChatTurn({
     previous && pendingHitl?.status === "pending" ? { message: previous, hitl: pendingHitl } : null;
   const resumeClarification = pendingClarification && attachments.length === 0;
 
-  let userMessageId: string;
-  if (existingUserMessage) {
-    userMessageId = existingUserMessage.id;
-  } else {
-    if (newAttachments) {
-      await attachmentService.linkToConversation(userId, newAttachments.map((a) => a.id), convoId);
-    }
-    const userMessage = await prisma.message.create({
-      data: {
-        conversationId: convoId,
-        parentId,
-        role: "USER",
-        content: trimmedQuestion,
-        source: "NONE",
-        ...(attachments.length > 0
-          ? { metadata: { attachments: attachments.map((a) => ({ ...a })) } }
-          : {}),
-      },
-    });
-    userMessageId = userMessage.id;
-  }
-  await conversationService.setActiveLeaf(convoId, userMessageId);
+  // Saving the user's message doesn't hold up the answer: its ID is chosen here, the writes run
+  // alongside the agent, and they're awaited before the reply (its child) is saved.
+  const userMessageId = existingUserMessage?.id ?? newMessageId();
+  const userMessageSaved = Promise.all([
+    existingUserMessage
+      ? null
+      : prisma.message.create({
+          data: {
+            id: userMessageId,
+            conversationId: convoId,
+            parentId,
+            role: "USER",
+            content: trimmedQuestion,
+            source: "NONE",
+            ...(attachments.length > 0
+              ? { metadata: { attachments: attachments.map((a) => ({ ...a })) } }
+              : {}),
+          },
+        }),
+    newAttachments && !existingUserMessage
+      ? attachmentService.linkToConversation(userId, newAttachments.map((a) => a.id), convoId)
+      : null,
+    conversationService.setActiveLeaf(convoId, userMessageId),
+  ]);
+  userMessageSaved.catch(() => {}); // awaited below; if the agent fails first, that error wins
 
   const trace: AgentTrace = {
     runId: newTraceRunId(),
@@ -222,70 +238,69 @@ export async function runChatTurn({
   let result: AgentResult;
   if (pendingClarification && resumeClarification) {
     try {
-      result = await resumeAgent(pendingClarification.hitl.threadId, agentQuestion, onToken, onStatus, trace);
+      result = await resumeAgent(pendingClarification.hitl.threadId, agentQuestion, { onToken, onStatus, onReset }, trace);
     } catch (err) {
       if (!(err instanceof NoPausedRunError)) throw err;
-      result = await askAgent(agentQuestion, memory, onToken, onStatus, trace);
+      result = await askAgent(agentQuestion, memory, { onToken, onStatus, onReset }, trace);
     }
   } else {
-    result = await askAgent(agentQuestion, memory, onToken, onStatus, trace);
+    result = await askAgent(agentQuestion, memory, { onToken, onStatus, onReset }, trace);
   }
   const traceMetadata = trace.runId ? { langsmithRunId: trace.runId } : {};
-  if (pendingClarification) {
-    await prisma.message.update({
-      where: { id: pendingClarification.message.id },
-      data: {
-        metadata: {
-          ...(pendingClarification.message.metadata as object),
-          hitl: { ...pendingClarification.hitl, status: "resolved" },
-        },
-      },
-    });
-  }
+  await userMessageSaved;
 
-  let answer: string;
-  let toolsUsed: string[];
-  let assistantMessageId: string;
-  if (result.status === "interrupted") {
-    answer = result.interrupt.question;
-    toolsUsed = [];
-    const hitl: HitlMetadata = {
-      type: "clarification",
-      status: "pending",
-      threadId: result.threadId,
-    };
-    const message = await prisma.message.create({
+  const interrupted = result.status === "interrupted";
+  const { answer, toolsUsed, source, metadata } =
+    result.status === "interrupted"
+      ? {
+          answer: result.interrupt.question,
+          toolsUsed: [] as string[],
+          source: "NONE" as const,
+          metadata: {
+            toolsUsed: [] as string[],
+            hitl: { type: "clarification", status: "pending", threadId: result.threadId } satisfies HitlMetadata,
+            ...traceMetadata,
+          },
+        }
+      : {
+          answer: result.answer,
+          toolsUsed: result.toolsUsed,
+          source: mapToolsToSource(result.toolsUsed),
+          metadata: {
+            toolsUsed: result.toolsUsed,
+            guardrail: { ...result.guardrail, issues: [...result.guardrail.issues] },
+            ...traceMetadata,
+          },
+        };
+
+  // The reply, the conversation's active message and a resolved clarification are independent
+  // writes, so they go out together rather than one after another.
+  const assistantMessageId = newMessageId();
+  await Promise.all([
+    prisma.message.create({
       data: {
+        id: assistantMessageId,
         conversationId: convoId,
         parentId: userMessageId,
         role: "ASSISTANT",
         content: answer,
-        source: "NONE",
-        metadata: { toolsUsed, hitl: { ...hitl }, ...traceMetadata },
+        source,
+        metadata,
       },
-    });
-    assistantMessageId = message.id;
-  } else {
-    answer = result.answer;
-    toolsUsed = result.toolsUsed;
-    const message = await prisma.message.create({
-      data: {
-        conversationId: convoId,
-        parentId: userMessageId,
-        role: "ASSISTANT",
-        content: answer,
-        source: mapToolsToSource(toolsUsed),
-        metadata: {
-          toolsUsed,
-          guardrail: { ...result.guardrail, issues: [...result.guardrail.issues] },
-          ...traceMetadata,
-        },
-      },
-    });
-    assistantMessageId = message.id;
-  }
-
-  await conversationService.setActiveLeaf(convoId, assistantMessageId);
+    }),
+    conversationService.setActiveLeaf(convoId, assistantMessageId),
+    pendingClarification
+      ? prisma.message.update({
+          where: { id: pendingClarification.message.id },
+          data: {
+            metadata: {
+              ...(pendingClarification.message.metadata as object),
+              hitl: { ...pendingClarification.hitl, status: "resolved" },
+            },
+          },
+        })
+      : null,
+  ]);
 
   void refreshShortTermMemory(convoId, assistantMessageId);
   void rememberConversation(convoId, assistantMessageId);
@@ -294,7 +309,7 @@ export async function runChatTurn({
     answer,
     toolsUsed,
     conversationId: convoId,
-    needsHumanInput: result.status === "interrupted",
+    needsHumanInput: interrupted,
     userMessageId,
     assistantMessageId,
   };
@@ -306,4 +321,12 @@ function questionForFilesOnly(attachments: MessageAttachment[]): string {
   if (docs === 0) return images === 1 ? "What's in this image?" : "What's in these images?";
   if (images === 0) return docs === 1 ? "Summarize this document." : "Summarize these documents.";
   return "What's in these files?";
+}
+
+/**
+ * A message ID chosen before the row is written (so work can start without waiting for the
+ * insert). Same shape as Prisma's cuid(): lowercase, starts with "c", 25 characters.
+ */
+function newMessageId(): string {
+  return `c${Date.now().toString(36)}${randomBytes(12).toString("hex")}`.slice(0, 25);
 }

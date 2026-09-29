@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto";
 import type { User } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
-import { conflictError, unauthenticatedError } from "../../shared/errors";
+import { conflictError, emailNotVerifiedError, ErrorCode, unauthenticatedError } from "../../shared/errors";
+import { otpService } from "./auth.otp";
 import {
   hashPassword,
   verifyHash,
@@ -38,6 +39,17 @@ export interface LoginInput {
   password: string;
 }
 
+export interface VerifyEmailInput {
+  email: string;
+  code: string;
+}
+
+export interface ResetPasswordInput {
+  email: string;
+  code: string;
+  newPassword: string;
+}
+
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
@@ -59,18 +71,38 @@ async function issueTokensForUser(userId: string): Promise<TokenPair> {
 }
 
 export const authService = {
-  async signup(input: SignupInput) {
+  /**
+   * Creates the account unverified and emails a code; no session is issued until `verifyEmail`.
+   * Signing up again with an email that was never verified replaces that pending account's details,
+   * since whoever created it never proved they own the address.
+   */
+  async signup(input: SignupInput): Promise<{ email: string }> {
     const existing = await findUserByEmail(input.email);
-    if (existing) throw conflictError(EMAIL_TAKEN);
+    if (existing?.emailVerified) throw conflictError(EMAIL_TAKEN);
     const passwordHash = await hashPassword(input.password);
-    const user = await prisma.user
-      .create({ data: { email: input.email, name: input.name, password: passwordHash } })
-      .catch((err: { code?: string }) => {
-        throw err?.code === "P2002" ? conflictError(EMAIL_TAKEN) : err;
-      });
+    const user = existing
+      ? await prisma.user.update({ where: { id: existing.id }, data: { name: input.name, password: passwordHash } })
+      : await prisma.user
+          .create({ data: { email: input.email, name: input.name, password: passwordHash } })
+          .catch((err: { code?: string }) => {
+            throw err?.code === "P2002" ? conflictError(EMAIL_TAKEN) : err;
+          });
 
-    const tokens = await issueTokensForUser(user.id);
-    return { user, ...tokens };
+    await otpService.issue(user, "VERIFY_EMAIL");
+    return { email: user.email };
+  },
+
+  async verifyEmail(input: VerifyEmailInput) {
+    const user = await findUserByEmail(input.email);
+    await otpService.consume(user?.emailVerified ? undefined : user?.id, "VERIFY_EMAIL", input.code);
+    const verified = await prisma.user.update({ where: { id: user!.id }, data: { emailVerified: true } });
+    const tokens = await issueTokensForUser(verified.id);
+    return { user: verified, ...tokens };
+  },
+
+  async resendVerification(email: string): Promise<void> {
+    const user = await findUserByEmail(email);
+    if (user && !user.emailVerified) await otpService.issue(user, "VERIFY_EMAIL");
   },
 
   async login(input: LoginInput) {
@@ -79,9 +111,39 @@ export const authService = {
     if (!user || !passwordOk) {
       throw unauthenticatedError("Incorrect email or password.");
     }
+    if (!user.emailVerified) {
+      // A code sent moments ago is still valid, so hitting the resend cooldown is fine here.
+      await otpService.issue(user, "VERIFY_EMAIL").catch((err) => {
+        if (err?.extensions?.code !== ErrorCode.RATE_LIMITED) throw err;
+      });
+      throw emailNotVerifiedError(user.email);
+    }
 
     const tokens = await issueTokensForUser(user.id);
     return { user, ...tokens };
+  },
+
+  /** Emails a reset code if the account exists. Callers always report success, so this can't reveal which emails are registered. */
+  async requestPasswordReset(email: string): Promise<void> {
+    const user = await findUserByEmail(email);
+    if (!user) return;
+    await otpService.issue(user, "RESET_PASSWORD").catch((err) => {
+      if (err?.extensions?.code !== ErrorCode.RATE_LIMITED) throw err;
+    });
+  },
+
+  /** Sets the new password and signs the account out everywhere. The code also proves email ownership. */
+  async resetPassword(input: ResetPasswordInput): Promise<void> {
+    const user = await findUserByEmail(input.email);
+    await otpService.consume(user?.id, "RESET_PASSWORD", input.code);
+    const password = await hashPassword(input.newPassword);
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user!.id },
+        data: { password, emailVerified: true, refreshTokenHash: null, refreshTokenIssuedAt: null },
+      }),
+      prisma.emailOtp.deleteMany({ where: { userId: user!.id, purpose: "VERIFY_EMAIL" } }),
+    ]);
   },
 
   async refresh(refreshTokenCookie: string | undefined): Promise<RefreshResult | null> {

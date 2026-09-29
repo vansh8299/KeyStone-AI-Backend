@@ -16,6 +16,12 @@ const EnvSchema = z.object({
   ACCESS_TOKEN_SECRET: withDefault("dev_access_secret_change_me"),
   REFRESH_TOKEN_SECRET: withDefault("dev_refresh_secret_change_me"),
 
+  MAIL_TRIGGER_URL: optionalString,
+  MAIL_TRIGGER_SECRET: optionalString,
+  MAIL_FROM: withDefault("Keystone AI <no-reply@keystone.local>"),
+
+  REDIS_URL: optionalString,
+  SHUTDOWN_GRACE_MS: numberWithDefault(25_000).pipe(z.number().int().min(0)),
   MONGODB_URI: z.string().min(1),
   MONGODB_DB_NAME: withDefault("rag_chat"),
   MONGODB_COLLECTION: withDefault("document_chunks"),
@@ -91,6 +97,20 @@ if (e.NODE_ENV === "production") {
   console.warn("Using weak development JWT secrets — set ACCESS_TOKEN_SECRET / REFRESH_TOKEN_SECRET before deploying.");
 }
 
+if (e.MAIL_TRIGGER_URL && !e.MAIL_TRIGGER_SECRET) {
+  throw new Error("Invalid environment variables:\n  - MAIL_TRIGGER_SECRET is required when MAIL_TRIGGER_URL is set");
+}
+if (e.NODE_ENV === "production" && !e.REDIS_URL) {
+  console.warn(
+    "REDIS_URL is not set — rate limits and in-progress chat replies are kept in this process's memory, " +
+      "which is only correct while the backend runs as a single instance."
+  );
+}
+if (!e.MAIL_TRIGGER_URL) {
+  const where = e.NODE_ENV === "production" ? "sign-up and password reset will fail" : "codes are printed to the console";
+  console.warn(`MAIL_TRIGGER_URL is not set — verification emails can't be sent; ${where}.`);
+}
+
 const langsmithEnabled = e.LANGSMITH_TRACING === "true" && Boolean(e.LANGSMITH_API_KEY);
 if (e.LANGSMITH_TRACING === "true" && !e.LANGSMITH_API_KEY) {
   console.warn("LANGSMITH_TRACING=true but LANGSMITH_API_KEY is missing — LangSmith tracing is off.");
@@ -124,6 +144,14 @@ export const env = {
   accessTokenSecret: e.ACCESS_TOKEN_SECRET,
   refreshTokenSecret: e.REFRESH_TOKEN_SECRET,
 
+  /** Google Apps Script web app that sends the OTP emails over HTTPS (backend/mail-trigger/Code.gs). */
+  mailTrigger: e.MAIL_TRIGGER_URL ? { url: e.MAIL_TRIGGER_URL, secret: e.MAIL_TRIGGER_SECRET! } : null,
+  mailFrom: e.MAIL_FROM,
+
+  /** Shared state for running several backend instances; without it, in-memory fallbacks are used. */
+  redisUrl: e.REDIS_URL,
+  /** How long shutdown waits for in-progress chat replies to finish. */
+  shutdownGraceMs: e.SHUTDOWN_GRACE_MS,
   mongodbUri: e.MONGODB_URI,
   mongodbDbName: e.MONGODB_DB_NAME,
   mongodbCollection: e.MONGODB_COLLECTION,

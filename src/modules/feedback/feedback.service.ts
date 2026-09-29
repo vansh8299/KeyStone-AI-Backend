@@ -51,9 +51,9 @@ export const feedbackService = {
     return saved;
   },
 
-  async forMessages(messageIds: string[]) {
-    if (messageIds.length === 0) return new Map();
-    const rows = await prisma.messageFeedback.findMany({ where: { messageId: { in: messageIds } } });
+  /** Feedback on every message of a conversation, keyed by message ID, in one query. */
+  async forConversation(conversationId: string) {
+    const rows = await prisma.messageFeedback.findMany({ where: { message: { conversationId } } });
     return new Map(rows.map((f) => [f.messageId, f]));
   },
 

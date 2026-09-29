@@ -10,6 +10,7 @@ import { clipHistoryMessage } from "../rag/langchain/history";
 import { getEmbeddingProvider } from "../rag/embeddings";
 import { loadTree, pathTo } from "../conversation/messageTree";
 import { messageTextWithAttachments } from "../attachment/attachment.service";
+import { tryLock } from "../../lib/lock";
 
 type PastChat = Pick<Conversation, "id" | "title" | "historySummary" | "historySummaryEmbedding" | "updatedAt">;
 
@@ -126,7 +127,8 @@ function transcriptFor(branch: BranchMessage[]): string {
     : text;
 }
 
-const inFlight = new Set<string>();
+/** Longest a summary may take before another instance may start one for the same conversation. */
+const SUMMARY_LOCK_TTL_MS = 5 * 60_000;
 
 export type RememberResult = "summarised" | "nothing" | "skipped";
 
@@ -135,8 +137,10 @@ export async function rememberConversation(
   leafId: string,
   { force = false }: { force?: boolean } = {}
 ): Promise<RememberResult> {
-  if (!env.referenceChatHistory || inFlight.has(conversationId)) return "skipped";
-  inFlight.add(conversationId);
+  if (!env.referenceChatHistory) return "skipped";
+  // One summary per conversation at a time, across every backend instance.
+  const release = await tryLock(`memory-summary:${conversationId}`, SUMMARY_LOCK_TTL_MS);
+  if (!release) return "skipped";
   try {
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
@@ -184,6 +188,6 @@ export async function rememberConversation(
     console.error("Past-conversation summary failed:", err);
     return "skipped";
   } finally {
-    inFlight.delete(conversationId);
+    await release();
   }
 }
