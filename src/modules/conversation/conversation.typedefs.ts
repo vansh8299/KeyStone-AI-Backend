@@ -21,8 +21,8 @@ export const conversationTypeDefs = gql`
   }
 
   extend type Query {
-    "Your conversations, most recently active first."
-    conversations: [Conversation!]!
+    "Your conversations, most recently active first; paged like User.conversations."
+    conversations(first: Int, after: ID): [Conversation!]!
     "One of your conversations (NOT_FOUND if it doesn't exist or isn't yours)."
     conversation(id: ID!): Conversation
   }

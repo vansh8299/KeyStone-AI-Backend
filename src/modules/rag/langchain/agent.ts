@@ -126,6 +126,11 @@ const GraphState = Annotation.Root({
     default: () => false,
     reducer: (_prev, next) => next,
   }),
+  /** The user's knowledge-base document IDs, fetched up front; null means look them up when searching. */
+  kbDocumentIds: Annotation<string[] | null>({
+    default: () => null,
+    reducer: (_prev, next) => next,
+  }),
   clarification: Annotation<string>({
     default: () => "",
     reducer: (_prev, next) => next,
@@ -169,10 +174,21 @@ function memoryContext(state: GraphStateType) {
   };
 }
 
-async function routeEntry(state: GraphStateType): Promise<"directAnswer" | "checkAmbiguity" | "listKnowledgeBase"> {
+/** The opening message of a chat: nothing earlier for the ambiguity check to resolve references against. */
+function isFirstMessage(state: GraphStateType): boolean {
+  return state.history.length === 0 && !state.conversationSummary && !state.hasAttachments;
+}
+
+async function routeEntry(
+  state: GraphStateType
+): Promise<"directAnswer" | "checkAmbiguity" | "searchKnowledgeBase" | "listKnowledgeBase"> {
   if (state.hasAttachments) return "checkAmbiguity";
   if (asksAboutKnowledgeBaseContents(state.question)) return "listKnowledgeBase";
-  return classifyEntry(state.question);
+  const route = await classifyEntry(state.question);
+  // The check mainly rewrites follow-ups ("what about the second one?") into standalone questions,
+  // which a first message never needs; skipping it saves an LLM round trip before the answer.
+  // Trade-off: a vague opening question is answered as best it can be instead of clarified.
+  return route === "checkAmbiguity" && isFirstMessage(state) ? "searchKnowledgeBase" : route;
 }
 
 async function checkAmbiguity(state: GraphStateType) {
@@ -306,9 +322,14 @@ async function directAnswer(state: GraphStateType) {
 }
 
 async function searchKnowledgeBase(state: GraphStateType) {
-  const kbChunks = state.userId
-    ? await knowledgeBaseSearchTool.invoke({ query: state.question, topK: 5, userId: state.userId })
-    : [];
+  // Nothing to search when the user has no documents (known up front for new questions).
+  if (!state.userId || state.kbDocumentIds?.length === 0) return { kbChunks: [] };
+  const kbChunks = await knowledgeBaseSearchTool.invoke({
+    query: state.question,
+    topK: 5,
+    userId: state.userId,
+    ...(state.kbDocumentIds ? { documentIds: state.kbDocumentIds } : {}),
+  });
   return { kbChunks };
 }
 
@@ -465,6 +486,7 @@ const graph = new StateGraph(GraphState)
   .addConditionalEdges(START, routeEntry, {
     directAnswer: "directAnswer",
     checkAmbiguity: "checkAmbiguity",
+    searchKnowledgeBase: "searchKnowledgeBase",
     listKnowledgeBase: "listKnowledgeBase",
   })
   .addEdge("listKnowledgeBase", END)
@@ -556,6 +578,13 @@ function createTokenForwarder(onToken: TokenHandler) {
 export type AgentStatus = "CHECKING_ANSWER" | "IMPROVING_ANSWER";
 export type StatusHandler = (status: AgentStatus) => void;
 
+/** Live updates while the agent answers. onReset: discard the text streamed so far. */
+export interface AgentCallbacks {
+  onToken?: TokenHandler;
+  onStatus?: StatusHandler;
+  onReset?: () => void;
+}
+
 function statusAfter(update: Record<string, unknown>): AgentStatus | null {
   for (const [node, value] of Object.entries(update)) {
     const changes = (value ?? {}) as Partial<GraphStateType>;
@@ -577,8 +606,7 @@ export interface AgentTrace extends TraceContext {
 async function runGraph(
   input: Parameters<Awaited<ReturnType<typeof compileGraph>>["stream"]>[0],
   threadId: string,
-  onToken?: TokenHandler,
-  onStatus?: StatusHandler,
+  { onToken, onStatus, onReset }: AgentCallbacks,
   { runId, ...trace }: AgentTrace = {},
   resumed = false
 ): Promise<AgentResult> {
@@ -592,16 +620,28 @@ async function runGraph(
     ...(runId ? { runId } : {}),
   };
 
-  const forward = onToken && !env.guardrailsEnabled ? createTokenForwarder(onToken) : null;
-  const reportStatus = onStatus && env.guardrailsEnabled ? onStatus : null;
+  // The draft streams as it's written, even with guardrails on; the review runs afterwards and
+  // most answers pass unchanged. If the reviewer asks for a revision, the draft is withdrawn at
+  // once (onReset) and the approved answer is sent at the end.
+  let streamed = "";
+  const forward = onToken
+    ? createTokenForwarder((text) => {
+        streamed += text;
+        onToken(text);
+      })
+    : null;
   const stream = await app.stream(input, { ...traced, ...config, streamMode: ["messages", "updates"] });
   for await (const [mode, payload] of stream as AsyncIterable<[string, unknown]>) {
     if (mode === "messages") {
       const [chunk, metadata] = payload as [{ content: unknown }, { langgraph_node?: string }];
       forward?.(metadata.langgraph_node ?? "", extractText(chunk.content));
-    } else if (mode === "updates" && reportStatus) {
+    } else if (mode === "updates" && env.guardrailsEnabled) {
       const status = statusAfter(payload as Record<string, unknown>);
-      if (status) reportStatus(status);
+      if (status === "IMPROVING_ANSWER" && streamed) {
+        streamed = "";
+        onReset?.();
+      }
+      if (status) onStatus?.(status);
     }
   }
 
@@ -613,7 +653,12 @@ async function runGraph(
 
   deleteAgentThread(threadId).catch((err) => console.error("Checkpoint cleanup failed:", err));
   const values = snapshot.values as GraphStateType;
-  if (onToken && env.guardrailsEnabled && values.answer) onToken(values.answer);
+  // Make sure the client ends up showing exactly the final answer (a revision, a withheld notice,
+  // or a node that post-processed what it streamed).
+  if (onToken && values.answer && values.answer.trim() !== streamed.trim()) {
+    if (streamed) onReset?.();
+    onToken(values.answer);
+  }
   return {
     status: "completed",
     answer: values.answer,
@@ -633,9 +678,10 @@ export async function askAgent(
     attachedDocuments?: string;
     documentOverview?: string;
     hasAttachments?: boolean;
+    /** The user's knowledge-base document IDs, if already fetched (saves a lookup mid-answer). */
+    knowledgeBaseDocumentIds?: string[];
   },
-  onToken?: TokenHandler,
-  onStatus?: StatusHandler,
+  callbacks: AgentCallbacks = {},
   trace?: AgentTrace
 ): Promise<AgentResult> {
   return runGraph(
@@ -648,6 +694,7 @@ export async function askAgent(
       attachedDocuments: memory.attachedDocuments ?? "",
       documentOverview: memory.documentOverview ?? "",
       hasAttachments: memory.hasAttachments ?? false,
+      kbDocumentIds: memory.knowledgeBaseDocumentIds ?? null,
       userId: memory.userId,
       clarification: "",
       kbChunks: [],
@@ -657,8 +704,7 @@ export async function askAgent(
       guardrail: { status: "pending", revisions: 0, issues: [] },
     },
     randomUUID(),
-    onToken,
-    onStatus,
+    callbacks,
     { userId: memory.userId, ...trace }
   );
 }
@@ -666,8 +712,7 @@ export async function askAgent(
 export async function resumeAgent(
   threadId: string,
   reply: string,
-  onToken?: TokenHandler,
-  onStatus?: StatusHandler,
+  callbacks: AgentCallbacks = {},
   trace?: AgentTrace
 ): Promise<AgentResult> {
   const app = await getCompiledGraph();
@@ -675,5 +720,5 @@ export async function resumeAgent(
   const isPaused = snapshot.tasks.some((task) => task.interrupts.length > 0);
   if (!isPaused) throw new NoPausedRunError(`No paused agent run for thread ${threadId}`);
 
-  return runGraph(new Command({ resume: reply }), threadId, onToken, onStatus, trace, true);
+  return runGraph(new Command({ resume: reply }), threadId, callbacks, trace, true);
 }

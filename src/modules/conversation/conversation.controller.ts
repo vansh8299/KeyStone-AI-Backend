@@ -2,13 +2,13 @@ import { GraphQLContext } from "../../context";
 import { requireAuth } from "../../shared/requireAuth";
 import { conversationService } from "./conversation.service";
 import { IdArgsSchema, parseInput, singleLineText } from "../../shared/validate";
-import { BranchArgsSchema } from "./conversation.schemas";
-import { feedbackService } from "../feedback/feedback.service";
+import { BranchArgsSchema, ConversationPageArgsSchema } from "./conversation.schemas";
 import { createRateLimiter } from "../../shared/rateLimit";
 import { z } from "zod";
 import { limits } from "../../config/limits";
 
 const titleLimiter = createRateLimiter({
+  name: "title",
   limit: 30,
   windowMs: 10 * 60 * 1000,
   message: "Too many requests. Please wait a few minutes and try again.",
@@ -28,15 +28,15 @@ const CreateConversationArgsSchema = z.object({
 
 export const conversationController = {
   Query: {
-    conversations: (_: unknown, __: unknown, ctx: GraphQLContext) => {
+    conversations: (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
-      return conversationService.findManyByUser(userId);
+      return conversationService.findManyByUser(userId, parseInput(ConversationPageArgsSchema, args));
     },
 
     conversation: (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
       const { id } = parseInput(IdArgsSchema, args);
-      return conversationService.requireOwned(id, userId);
+      return conversationService.requireOwnedWithBranch(id, userId);
     },
   },
 
@@ -57,7 +57,7 @@ export const conversationController = {
     generateConversationTitle: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
       const { id } = parseInput(IdArgsSchema, args);
-      titleLimiter.consume(`user:${userId}`);
+      await titleLimiter.consume(`user:${userId}`);
       await conversationService.requireOwned(id, userId);
       return conversationService.generateTitle(id);
     },
@@ -65,25 +65,19 @@ export const conversationController = {
     switchBranch: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
       const { conversationId, messageId } = parseInput(BranchArgsSchema, args);
-      await conversationService.requireOwned(conversationId, userId);
-      return conversationService.switchBranch(conversationId, messageId);
+      return conversationService.switchBranch(conversationId, userId, messageId);
     },
 
     rewindConversation: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
       const userId = requireAuth(ctx);
       const { conversationId, messageId } = parseInput(BranchArgsSchema, args);
-      await conversationService.requireOwned(conversationId, userId);
-      return conversationService.rewind(conversationId, messageId);
+      return conversationService.rewind(conversationId, userId, messageId);
     },
   },
 
   Conversation: {
     user: (parent: { userId: string }) => conversationService.findOwner(parent.userId),
-    messages: async (parent: { id: string; activeLeafId: string | null }) => {
-      const path = await conversationService.findActivePath(parent);
-      const feedback = await feedbackService.forMessages(path.map((m) => m.id));
-      return path.map((m) => ({ ...m, feedback: feedback.get(m.id) ?? null }));
-    },
+    messages: (parent: { id: string; activeLeafId: string | null }) => conversationService.activePath(parent),
     isRewound: (parent: { id: string; activeLeafId: string | null }) =>
       conversationService.isRewound(parent),
   },

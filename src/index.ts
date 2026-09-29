@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import http from "http";
@@ -19,8 +20,14 @@ import { formatGraphQLError, formatGraphQLErrors } from "./shared/errorHandling"
 import { errorHandler, notFoundHandler } from "./shared/httpMiddleware";
 import { attachmentRouter } from "./modules/attachment/attachment.routes";
 import { flushTraces } from "./lib/langsmith";
+import { closeMongo } from "./lib/mongo";
+import { closeRedis } from "./lib/redis";
+import { activeTurns } from "./modules/rag/activeTurns";
 import { validate as graphqlValidate, specifiedRules } from "graphql";
 import { queryLimitsRule } from "./graphql/queryLimits";
+
+/** Set once the server is running; stops it (draining HTTP requests and closing WebSockets). */
+let stopServer: (() => Promise<void>) | null = null;
 
 async function main() {
   const app = express();
@@ -37,6 +44,9 @@ async function main() {
     });
     next();
   });
+  // Gzip JSON responses (conversation histories, the sidebar list). Chat replies stream over the
+  // WebSocket, which this doesn't touch.
+  app.use(compression());
 
   const [resolvers, graphqlUploadExpress] = await Promise.all([
     buildResolvers(),
@@ -79,6 +89,7 @@ async function main() {
   });
 
   await server.start();
+  stopServer = () => server.stop();
 
   app.use(
     "/graphql",
@@ -121,10 +132,25 @@ process.on("unhandledRejection", (reason) => {
   console.error("Unhandled promise rejection:", reason);
 });
 
-async function shutdown() {
-  await Promise.all([flushTraces(), prisma.$disconnect()]);
+let shuttingDown = false;
+
+/**
+ * Graceful shutdown for deploys and scale-downs: let chat replies being generated finish, then
+ * drain HTTP requests and close WebSockets, then disconnect. Hosts wait a limited time after
+ * SIGTERM (Render: 30 s by default), so the wait for replies is bounded by env.shutdownGraceMs.
+ */
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received — finishing in-progress work before exiting…`);
+  setTimeout(() => process.exit(1), env.shutdownGraceMs + 15_000).unref(); // last resort
+
+  const unfinished = await activeTurns.drain(env.shutdownGraceMs);
+  if (unfinished > 0) console.warn(`Shutting down with ${unfinished} chat repl${unfinished === 1 ? "y" : "ies"} still running.`);
+  await stopServer?.().catch((err) => console.error("Error while stopping the server:", err));
+  await Promise.allSettled([flushTraces(), prisma.$disconnect(), closeMongo(), closeRedis()]);
   process.exit(0);
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));

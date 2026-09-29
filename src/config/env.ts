@@ -18,13 +18,10 @@ const EnvSchema = z.object({
 
   MAIL_TRIGGER_URL: optionalString,
   MAIL_TRIGGER_SECRET: optionalString,
-  SMTP_HOST: optionalString,
-  SMTP_PORT: numberWithDefault(587).pipe(z.number().int().positive()),
-  SMTP_SECURE: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["true", "false"]).optional()),
-  SMTP_USER: optionalString,
-  SMTP_PASS: optionalString,
   MAIL_FROM: withDefault("Keystone AI <no-reply@keystone.local>"),
 
+  REDIS_URL: optionalString,
+  SHUTDOWN_GRACE_MS: numberWithDefault(25_000).pipe(z.number().int().min(0)),
   MONGODB_URI: z.string().min(1),
   MONGODB_DB_NAME: withDefault("rag_chat"),
   MONGODB_COLLECTION: withDefault("document_chunks"),
@@ -103,9 +100,15 @@ if (e.NODE_ENV === "production") {
 if (e.MAIL_TRIGGER_URL && !e.MAIL_TRIGGER_SECRET) {
   throw new Error("Invalid environment variables:\n  - MAIL_TRIGGER_SECRET is required when MAIL_TRIGGER_URL is set");
 }
-if (!e.MAIL_TRIGGER_URL && !e.SMTP_HOST) {
+if (e.NODE_ENV === "production" && !e.REDIS_URL) {
+  console.warn(
+    "REDIS_URL is not set — rate limits and in-progress chat replies are kept in this process's memory, " +
+      "which is only correct while the backend runs as a single instance."
+  );
+}
+if (!e.MAIL_TRIGGER_URL) {
   const where = e.NODE_ENV === "production" ? "sign-up and password reset will fail" : "codes are printed to the console";
-  console.warn(`Neither MAIL_TRIGGER_URL nor SMTP_HOST is set — verification emails can't be sent; ${where}.`);
+  console.warn(`MAIL_TRIGGER_URL is not set — verification emails can't be sent; ${where}.`);
 }
 
 const langsmithEnabled = e.LANGSMITH_TRACING === "true" && Boolean(e.LANGSMITH_API_KEY);
@@ -141,18 +144,14 @@ export const env = {
   accessTokenSecret: e.ACCESS_TOKEN_SECRET,
   refreshTokenSecret: e.REFRESH_TOKEN_SECRET,
 
-  /** Google Apps Script web app that sends mail over HTTPS; preferred over SMTP when set. */
+  /** Google Apps Script web app that sends the OTP emails over HTTPS (backend/mail-trigger/Code.gs). */
   mailTrigger: e.MAIL_TRIGGER_URL ? { url: e.MAIL_TRIGGER_URL, secret: e.MAIL_TRIGGER_SECRET! } : null,
-  smtp: {
-    host: e.SMTP_HOST,
-    port: e.SMTP_PORT,
-    /** Implicit TLS; defaults to on for port 465, otherwise STARTTLS is negotiated. */
-    secure: e.SMTP_SECURE ? e.SMTP_SECURE === "true" : e.SMTP_PORT === 465,
-    user: e.SMTP_USER,
-    pass: e.SMTP_PASS,
-  },
   mailFrom: e.MAIL_FROM,
 
+  /** Shared state for running several backend instances; without it, in-memory fallbacks are used. */
+  redisUrl: e.REDIS_URL,
+  /** How long shutdown waits for in-progress chat replies to finish. */
+  shutdownGraceMs: e.SHUTDOWN_GRACE_MS,
   mongodbUri: e.MONGODB_URI,
   mongodbDbName: e.MONGODB_DB_NAME,
   mongodbCollection: e.MONGODB_COLLECTION,

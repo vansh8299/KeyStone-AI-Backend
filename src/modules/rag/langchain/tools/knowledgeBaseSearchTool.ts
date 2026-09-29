@@ -15,8 +15,8 @@ export interface KnowledgeBaseChunk {
 
 export function createKnowledgeBaseSearchTool() {
   return tool(
-    async ({ query, topK, userId }): Promise<KnowledgeBaseChunk[]> => {
-      const documentIds = await documentService.idsForUser(userId);
+    async ({ query, topK, userId, documentIds: knownIds }): Promise<KnowledgeBaseChunk[]> => {
+      const documentIds = knownIds ?? (await documentService.idsForUser(userId));
       const results = await similaritySearchWithScore(query, documentIds, topK ?? 5);
       return results.map(({ document, score }) => ({
         text: document.pageContent,
@@ -32,6 +32,10 @@ export function createKnowledgeBaseSearchTool() {
         query: z.string().describe("The search query"),
         topK: z.number().int().positive().optional().describe("Number of chunks to return"),
         userId: z.string().min(1).describe("Whose knowledge base to search (the signed-in user)"),
+        documentIds: z
+          .array(z.string())
+          .optional()
+          .describe("That user's document IDs, when the caller already has them (skips looking them up)"),
       }),
     }
   );
