@@ -11,6 +11,9 @@ import { getEmbeddingProvider } from "../rag/embeddings";
 import { loadTree, pathTo } from "../conversation/messageTree";
 import { messageTextWithAttachments } from "../attachment/attachment.service";
 import { tryLock } from "../../lib/lock";
+import { moduleLogger } from "../../lib/logger";
+
+const log = moduleLogger("memory");
 
 type PastChat = Pick<Conversation, "id" | "title" | "historySummary" | "historySummaryEmbedding" | "updatedAt">;
 
@@ -65,12 +68,12 @@ export async function retrievePastConversations(
       let timer: NodeJS.Timeout | undefined;
       const timeout = new Promise<PastChat[]>((resolve) => {
         timer = setTimeout(() => {
-          console.warn("Past-conversation ranking timed out; using recent conversations only.");
+          log.warn("past-conversation ranking timed out; using recent conversations only");
           resolve([]);
         }, limits.pastChatsRankingTimeoutMs);
       });
       const ranked = mostRelated(older, question, limits.pastChatsRelated).catch((err) => {
-        console.error("Past-conversation ranking failed:", err);
+        log.warn({ err }, "past-conversation ranking failed");
         return [];
       });
       related = await Promise.race([ranked, timeout]);
@@ -84,7 +87,7 @@ export async function retrievePastConversations(
     }
     return sections.join("\n\n");
   } catch (err) {
-    console.error("Past-conversation retrieval failed:", err);
+    log.error({ err }, "past-conversation retrieval failed");
     return "";
   }
 }
@@ -185,7 +188,7 @@ export async function rememberConversation(
     });
     return nothing ? "nothing" : "summarised";
   } catch (err) {
-    console.error("Past-conversation summary failed:", err);
+    log.error({ err, conversationId }, "past-conversation summary failed");
     return "skipped";
   } finally {
     await release();

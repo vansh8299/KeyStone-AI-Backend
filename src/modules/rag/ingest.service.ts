@@ -4,10 +4,11 @@ import { limits } from "../../config/limits";
 import { badUserInputError, conflictError } from "../../shared/errors";
 import { documentService } from "../document/document.service";
 import { detectFileCategory } from "./loaders/fileType";
-import { convertToPdfBuffer } from "./loaders/convertToPdf";
-import { runPdfPipeline } from "./loaders/pdfPipeline";
-import { runStructuredPipeline } from "./loaders/structuredPipeline";
-import { addDocumentsToStore, deleteDocumentsByDocumentId } from "./langchain/vectorStore";
+import { deleteDocumentsByDocumentId } from "./langchain/vectorStore";
+import { notifyJobQueued } from "./ingestionQueue";
+import { moduleLogger } from "../../lib/logger";
+
+const log = moduleLogger("ingestion");
 
 export interface IngestFileInput {
   userId: string;
@@ -34,6 +35,11 @@ function cleanFilename(filename: string): string {
 }
 
 export const ingestService = {
+  /**
+   * Accepts a file for the knowledge base: validates it, rejects duplicates, and queues it for a
+   * background worker (see ingestionQueue.ts). Returns the new document straight away with status
+   * PROCESSING; it becomes READY (searchable) or FAILED once processed.
+   */
   async ingestFile(rawInput: IngestFileInput) {
     const input = { ...rawInput, filename: cleanFilename(rawInput.filename) };
     const category = detectFileCategory(input.filename);
@@ -43,18 +49,37 @@ export const ingestService = {
       );
     }
 
-    // Checked before any chunking / embedding so a duplicate costs nothing but the hash.
+    // Checked before anything is stored, so a duplicate costs nothing but the hash.
     const hash = contentHash(input.buffer);
     const existing = await prisma.document.findUnique({
       where: { userId_contentHash: { userId: input.userId, contentHash: hash } },
-      select: { title: true },
+      select: { id: true, title: true, status: true },
     });
-    if (existing) throw duplicateError(existing.title);
+    if (existing?.status === "READY") throw duplicateError(existing.title);
+    if (existing?.status === "PROCESSING") {
+      throw conflictError(`This content is already being processed as "${existing.title}".`);
+    }
+    // A failed earlier attempt with the same content: uploading it again is the retry.
+    if (existing) await prisma.document.deleteMany({ where: { id: existing.id, status: "FAILED" } });
 
     let document;
     try {
       document = await prisma.document.create({
-        data: { userId: input.userId, title: input.filename, sourceUrl: input.sourceUrl, contentHash: hash },
+        data: {
+          userId: input.userId,
+          title: input.filename,
+          sourceUrl: input.sourceUrl,
+          contentHash: hash,
+          status: "PROCESSING",
+          job: {
+            create: {
+              userId: input.userId,
+              filename: input.filename,
+              sourceUrl: input.sourceUrl,
+              data: input.buffer,
+            },
+          },
+        },
       });
     } catch (err) {
       // Two identical uploads raced past the check above; the unique index caught the second.
@@ -66,30 +91,8 @@ export const ingestService = {
       throw duplicateError(winner?.title ?? input.filename);
     }
 
-    try {
-      const baseMetadata = {
-        documentId: document.id,
-        userId: input.userId,
-        title: input.filename,
-        sourceUrl: input.sourceUrl,
-      };
-
-      const chunks =
-        category === "structured"
-          ? await runStructuredPipeline(input.buffer, input.filename, baseMetadata)
-          : await runPdfPipeline(
-              category === "pdf" ? input.buffer : await convertToPdfBuffer(input.buffer, input.filename),
-              baseMetadata
-            );
-
-      await addDocumentsToStore(chunks);
-      await prisma.document.update({ where: { id: document.id }, data: { mongoDocId: document.id } });
-      return { document, chunkCount: chunks.length, pipeline: category };
-    } catch (err) {
-      await deleteDocumentsByDocumentId(document.id).catch(() => undefined);
-      await prisma.document.delete({ where: { id: document.id } }).catch(() => undefined);
-      throw err;
-    }
+    notifyJobQueued();
+    return { document, chunkCount: null, pipeline: null };
   },
 
   async ingestText(input: { userId: string; title: string; content: string; sourceUrl?: string }) {
@@ -102,12 +105,12 @@ export const ingestService = {
   },
 
   async deleteIngested(documentId: string, userId: string) {
-    const document = await documentService.requireOwned(documentId, userId);
+    await documentService.requireOwned(documentId, userId);
 
     const deletedChunks = await deleteDocumentsByDocumentId(documentId);
     await prisma.document.delete({ where: { id: documentId } });
 
-    console.log(`Deleted document ${documentId} ("${document.title}") and ${deletedChunks} chunks`);
+    log.info({ documentId, chunks: deletedChunks }, "knowledge-base document deleted");
     return true;
   },
 };

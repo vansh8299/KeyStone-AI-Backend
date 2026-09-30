@@ -1,6 +1,13 @@
 import gql from "graphql-tag";
 
 export const documentTypeDefs = gql`
+  "Ingestion runs in the background after an upload; only READY documents are searched."
+  enum DocumentStatus {
+    PROCESSING
+    READY
+    FAILED
+  }
+
   "A document in the signed-in user's knowledge base (add with ingestFile / ingestText)."
   type Document {
     id: ID!
@@ -9,6 +16,13 @@ export const documentTypeDefs = gql`
     mongoDocId: String
     "SHA-256 (hex) of the ingested content; null for documents added before duplicate detection."
     contentHash: String
+    status: DocumentStatus!
+    "Why ingestion failed, when status is FAILED (safe to show). Uploading the file again retries."
+    error: String
+    "Chunks stored for search, once READY."
+    chunkCount: Int
+    "Which loader processed it: pdf, convertible (converted to PDF first) or structured."
+    pipeline: String
     createdAt: DateTime!
   }
 

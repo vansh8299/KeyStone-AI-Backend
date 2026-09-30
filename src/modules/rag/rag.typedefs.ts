@@ -11,10 +11,11 @@ export const ragTypeDefs = gql`
     score: Float!
   }
 
+  "The queued document (status PROCESSING); poll documents / document(id) for the outcome."
   type IngestResult {
     document: Document!
-    chunkCount: Int!
-    pipeline: String!
+    chunkCount: Int @deprecated(reason: "Ingestion is queued; read Document.chunkCount once READY.")
+    pipeline: String @deprecated(reason: "Ingestion is queued; read Document.pipeline once READY.")
   }
 
   type AgentAnswer {

@@ -1,5 +1,8 @@
 import { env } from "../config/env";
 import { serviceUnavailableError } from "../shared/errors";
+import { moduleLogger } from "./logger";
+
+const log = moduleLogger("mail");
 
 export interface MailMessage {
   to: string;
@@ -39,13 +42,13 @@ export async function sendMail(message: MailMessage): Promise<void> {
   if (!env.mailTrigger) {
     if (env.isProd) throw serviceUnavailableError("Email isn't configured on this server. Please try again later.");
     // Development without the mail trigger: print the message so the flow can still be completed locally.
-    console.info(`[mail] MAIL_TRIGGER_URL not set — would send to ${message.to}: ${message.subject}\n${message.text}`);
+    log.info(`MAIL_TRIGGER_URL not set — email not sent (development). To ${message.to}: ${message.subject}\n${message.text}`);
     return;
   }
   try {
     await sendViaMailTrigger(env.mailTrigger, message);
   } catch (err) {
-    console.error("[mail] Failed to send email via mail trigger:", err);
+    log.error({ err, subject: message.subject }, "sending email via the mail trigger failed");
     throw serviceUnavailableError("We couldn't send the email. Please try again in a moment.");
   }
 }

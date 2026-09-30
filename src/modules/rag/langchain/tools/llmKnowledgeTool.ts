@@ -26,6 +26,12 @@ export function createLlmKnowledgeTool() {
                 ? `Questions about the attached documents (summaries, facts, figures, comparisons, ` +
                   `analysis) are answerable: use their content below. `
                 : "") +
+              (pastConversations
+                ? `Questions about people, projects, files or anything else from your past ` +
+                  `conversations with this user are answerable: use that memory below, and say it's ` +
+                  `from an earlier chat. If the question could mean someone or something from that ` +
+                  `memory, answer about that first. `
+                : "") +
               `Only if the question needs current/live ` +
               `information you can't know (news, prices, today's date, recent releases, anything ` +
               `time-sensitive), or you're genuinely not confident in the answer, respond with EXACTLY ` +

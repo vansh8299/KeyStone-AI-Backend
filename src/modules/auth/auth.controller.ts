@@ -11,6 +11,9 @@ import {
   VerifyEmailArgsSchema,
   ResetPasswordArgsSchema,
 } from "./auth.schemas";
+import { moduleLogger } from "../../lib/logger";
+
+const log = moduleLogger("auth");
 
 const loginLimiter = createRateLimiter({
   name: "login",
@@ -55,7 +58,9 @@ export const authController = {
       await signupLimiter.consume(`ip:${clientIp(ctx)}`);
       const { input } = parseInput(SignupArgsSchema, args);
       await sendCodeLimiter.consume(`email:${input.email}`);
-      return authService.signup(input);
+      const result = await authService.signup(input);
+      log.info({ ip: clientIp(ctx) }, "account created; verification code sent");
+      return result;
     },
 
     verifyEmail: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
@@ -63,6 +68,7 @@ export const authController = {
       await verifyCodeLimiter.consume(`ip:${clientIp(ctx)}`, `email:${input.email}`);
       const { user, accessToken, refreshToken } = await authService.verifyEmail(input);
       setAuthCookies(ctx.res, accessToken, refreshToken);
+      log.info({ userId: user.id }, "email verified; signed in");
       return { user };
     },
 
@@ -77,6 +83,7 @@ export const authController = {
       const { email } = parseInput(EmailArgsSchema, args);
       await sendCodeLimiter.consume(`ip:${clientIp(ctx)}`, `email:${email}`);
       await authService.requestPasswordReset(email);
+      log.info({ ip: clientIp(ctx) }, "password reset requested");
       return true;
     },
 
@@ -86,6 +93,7 @@ export const authController = {
       await authService.resetPassword(input);
       // The reset signed out every session, including this browser's.
       clearAuthCookies(ctx.res);
+      log.info({ ip: clientIp(ctx) }, "password reset completed; all sessions signed out");
       return true;
     },
 
@@ -93,9 +101,19 @@ export const authController = {
       const { input } = parseInput(LoginArgsSchema, args);
       const accountKey = `email:${input.email.toLowerCase()}`;
       await loginLimiter.consume(`ip:${clientIp(ctx)}`, accountKey);
-      const { user, accessToken, refreshToken } = await authService.login(input);
+      let result;
+      try {
+        result = await authService.login(input);
+      } catch (err) {
+        const code = (err as { extensions?: { code?: unknown } }).extensions?.code;
+        if (code === "UNAUTHENTICATED") log.warn({ ip: clientIp(ctx) }, "login failed: wrong email or password");
+        else if (code === "EMAIL_NOT_VERIFIED") log.info({ ip: clientIp(ctx) }, "login blocked: email not verified");
+        throw err;
+      }
+      const { user, accessToken, refreshToken } = result;
       await loginLimiter.reset(accountKey);
       setAuthCookies(ctx.res, accessToken, refreshToken);
+      log.info({ userId: user.id, ip: clientIp(ctx) }, "signed in");
       return { user };
     },
 
@@ -104,6 +122,7 @@ export const authController = {
       const result = await authService.refresh(ctx.req.cookies?.refresh_token);
       if (!result) {
         clearAuthCookies(ctx.res);
+        log.debug("session refresh rejected");
         throw unauthenticatedError("Your session has expired. Please log in again.");
       }
       setAuthCookies(ctx.res, result.accessToken, result.refreshToken);
@@ -113,6 +132,7 @@ export const authController = {
     logout: async (_: unknown, __: unknown, ctx: GraphQLContext) => {
       await authService.logout(ctx.userId, ctx.req.cookies?.refresh_token);
       clearAuthCookies(ctx.res);
+      log.info({ userId: ctx.userId }, "signed out");
       return true;
     },
   },

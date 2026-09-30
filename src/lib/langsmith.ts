@@ -3,6 +3,9 @@ import { Client } from "langsmith";
 import { awaitAllCallbacks } from "@langchain/core/callbacks/promises";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { env } from "../config/env";
+import { moduleLogger } from "./logger";
+
+const log = moduleLogger("langsmith");
 
 let client: Client | null = null;
 function getClient(): Client {
@@ -64,7 +67,7 @@ export const langsmithFeedback = {
         await getClient().createFeedback(runId, FEEDBACK_KEY, { ...fields, feedbackId, feedbackSourceType: "app" });
       }
     } catch (err) {
-      console.error("LangSmith feedback sync failed:", err);
+      log.warn({ err }, "LangSmith feedback sync failed");
     }
   },
 };
@@ -74,6 +77,6 @@ export async function flushTraces(): Promise<void> {
   try {
     await awaitAllCallbacks();
   } catch (err) {
-    console.error("Flushing LangSmith traces failed:", err);
+    log.warn({ err }, "flushing LangSmith traces failed");
   }
 }

@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { moduleLogger } from "../../../lib/logger";
+
+const log = moduleLogger("llm-output");
 
 export function extractText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -24,7 +27,7 @@ export function parseJsonFromLlm<T extends z.ZodTypeAny>(text: string, schema: T
 
   const result = schema.safeParse(raw);
   if (!result.success) {
-    console.warn("LLM output failed schema validation:", result.error.flatten());
+    log.warn({ issues: result.error.flatten() }, "LLM output failed schema validation");
     return null;
   }
   return result.data;

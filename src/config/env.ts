@@ -12,7 +12,8 @@ const EnvSchema = z.object({
   PORT: numberWithDefault(4000),
   DATABASE_URL: z.string().min(1),
   FRONTEND_ORIGIN: withDefault("http://localhost:3000"),
-  TRUST_PROXY: numberWithDefault(0).pipe(z.number().int().min(0)),
+  // Render (which sets RENDER=true) always sits one proxy in front of the app.
+  TRUST_PROXY: numberWithDefault(process.env.RENDER ? 1 : 0).pipe(z.number().int().min(0)),
   ACCESS_TOKEN_SECRET: withDefault("dev_access_secret_change_me"),
   REFRESH_TOKEN_SECRET: withDefault("dev_refresh_secret_change_me"),
 
@@ -21,7 +22,17 @@ const EnvSchema = z.object({
   MAIL_FROM: withDefault("Keystone AI <no-reply@keystone.local>"),
 
   REDIS_URL: optionalString,
-  SHUTDOWN_GRACE_MS: numberWithDefault(25_000).pipe(z.number().int().min(0)),
+  LOG_LEVEL: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).optional()
+  ),
+  SHUTDOWN_GRACE_MS: z.preprocess(
+    (v) => (v === "" || v === undefined ? undefined : Number(v)),
+    z.number().int().min(0).optional()
+  ),
+  INGESTION_WORKER: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["true", "false"]).default("true")),
+  INGESTION_CONCURRENCY: numberWithDefault(2).pipe(z.number().int().min(1).max(16)),
+  INGESTION_IDLE_POLL_MS: numberWithDefault(300_000).pipe(z.number().int().min(1_000)),
   MONGODB_URI: z.string().min(1),
   MONGODB_DB_NAME: withDefault("rag_chat"),
   MONGODB_COLLECTION: withDefault("document_chunks"),
@@ -77,6 +88,9 @@ for (const [name, legacy] of Object.entries(LEGACY_LANGSMITH_NAMES)) {
   if (!process.env[name] && process.env[legacy]) process.env[name] = process.env[legacy];
 }
 
+/** Configuration warnings found while loading; logged at startup once the logger exists. */
+export const envWarnings: string[] = [];
+
 const parsed = EnvSchema.safeParse(process.env);
 if (!parsed.success) {
   const issues = parsed.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`).join("\n");
@@ -94,26 +108,33 @@ if (e.NODE_ENV === "production") {
   ].filter(Boolean);
   if (problems.length > 0) throw new Error(`Invalid environment variables:\n  - ${problems.join("\n  - ")}`);
 } else if (weakSecret(e.ACCESS_TOKEN_SECRET) || weakSecret(e.REFRESH_TOKEN_SECRET)) {
-  console.warn("Using weak development JWT secrets — set ACCESS_TOKEN_SECRET / REFRESH_TOKEN_SECRET before deploying.");
+  envWarnings.push("Using weak development JWT secrets — set ACCESS_TOKEN_SECRET / REFRESH_TOKEN_SECRET before deploying.");
 }
 
 if (e.MAIL_TRIGGER_URL && !e.MAIL_TRIGGER_SECRET) {
   throw new Error("Invalid environment variables:\n  - MAIL_TRIGGER_SECRET is required when MAIL_TRIGGER_URL is set");
 }
+if (e.NODE_ENV === "production" && e.TRUST_PROXY === 0) {
+  envWarnings.push(
+    "TRUST_PROXY is 0 — if this runs behind a proxy or load balancer, every visitor appears to come " +
+      "from the proxy's address and shares one set of per-IP rate limits (login, sign-up, codes). " +
+      "Set TRUST_PROXY to the number of proxies in front of the app."
+  );
+}
 if (e.NODE_ENV === "production" && !e.REDIS_URL) {
-  console.warn(
+  envWarnings.push(
     "REDIS_URL is not set — rate limits and in-progress chat replies are kept in this process's memory, " +
       "which is only correct while the backend runs as a single instance."
   );
 }
 if (!e.MAIL_TRIGGER_URL) {
   const where = e.NODE_ENV === "production" ? "sign-up and password reset will fail" : "codes are printed to the console";
-  console.warn(`MAIL_TRIGGER_URL is not set — verification emails can't be sent; ${where}.`);
+  envWarnings.push(`MAIL_TRIGGER_URL is not set — verification emails can't be sent; ${where}.`);
 }
 
 const langsmithEnabled = e.LANGSMITH_TRACING === "true" && Boolean(e.LANGSMITH_API_KEY);
 if (e.LANGSMITH_TRACING === "true" && !e.LANGSMITH_API_KEY) {
-  console.warn("LANGSMITH_TRACING=true but LANGSMITH_API_KEY is missing — LangSmith tracing is off.");
+  envWarnings.push("LANGSMITH_TRACING=true but LANGSMITH_API_KEY is missing — LangSmith tracing is off.");
 }
 process.env.LANGSMITH_TRACING = String(langsmithEnabled);
 process.env.LANGCHAIN_TRACING_V2 = String(langsmithEnabled);
@@ -150,8 +171,19 @@ export const env = {
 
   /** Shared state for running several backend instances; without it, in-memory fallbacks are used. */
   redisUrl: e.REDIS_URL,
+  /** debug in development, info in production, unless LOG_LEVEL says otherwise. */
+  logLevel: e.LOG_LEVEL ?? (e.NODE_ENV === "production" ? "info" : "debug"),
   /** How long shutdown waits for in-progress chat replies to finish. */
-  shutdownGraceMs: e.SHUTDOWN_GRACE_MS,
+  /**
+   * 25 s in production (hosts wait ~30 s after SIGTERM). 0 in development: `tsx watch` starts the
+   * new process right away, and waiting would keep the port busy so the restart fails (EADDRINUSE).
+   */
+  shutdownGraceMs: e.SHUTDOWN_GRACE_MS ?? (e.NODE_ENV === "production" ? 25_000 : 0),
+  /** Whether this process runs knowledge-base ingestion jobs (false when a separate worker does). */
+  ingestionWorker: e.INGESTION_WORKER === "true",
+  ingestionConcurrency: e.INGESTION_CONCURRENCY,
+  /** How often idle workers look for jobs they weren't woken for (e.g. a crashed worker's). */
+  ingestionIdlePollMs: e.INGESTION_IDLE_POLL_MS,
   mongodbUri: e.MONGODB_URI,
   mongodbDbName: e.MONGODB_DB_NAME,
   mongodbCollection: e.MONGODB_COLLECTION,

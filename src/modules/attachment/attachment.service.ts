@@ -11,6 +11,7 @@ import {
   type DocumentExtension,
 } from "../rag/langchain/documentReader";
 import { getEmbeddingProvider } from "../rag/embeddings";
+import { runInBackground } from "../../lib/backgroundTasks";
 
 export type AttachmentKind = "image" | "document";
 
@@ -100,7 +101,7 @@ export const attachmentService = {
     const upload = imageType
       ? await this.readImage(filename, data, imageType)
       : await this.readDocumentFile(filename, data);
-    deleteStaleUploads().catch((err) => console.error("Unsent attachment cleanup failed:", err));
+    runInBackground("unsent attachment cleanup", deleteStaleUploads);
 
     const { chunks, ...fields } = upload;
     const created = await prisma.attachment.create({

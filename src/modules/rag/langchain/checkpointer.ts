@@ -1,6 +1,9 @@
 import { MongoDBSaver } from "@langchain/langgraph-checkpoint-mongodb";
 import { env } from "../../../config/env";
 import { getMongoClient } from "../../../lib/mongo";
+import { moduleLogger } from "../../../lib/logger";
+
+const log = moduleLogger("checkpointer");
 
 const CHECKPOINT_TTL_SECONDS = 7 * 24 * 60 * 60;
 
@@ -18,7 +21,7 @@ export function getCheckpointer(): Promise<MongoDBSaver> {
         ttl: CHECKPOINT_TTL_SECONDS,
       });
       const errors = await saver.setup();
-      if (errors.length > 0) console.error("Checkpointer index setup errors:", errors);
+      if (errors.length > 0) log.error({ errors }, "checkpointer index setup failed");
       return saver;
     })().catch((err) => {
       cached = null;

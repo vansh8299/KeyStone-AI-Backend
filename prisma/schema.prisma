@@ -60,7 +60,8 @@ model Conversation {
   messages                Message[]
   attachments             Attachment[]
 
-  @@index([userId])
+  /// Serves "this user's conversations, most recent first" (the paged sidebar, long-term memory).
+  @@index([userId, updatedAt(sort: Desc), id(sort: Desc)])
 }
 
 model Message {
@@ -96,19 +97,55 @@ enum MessageSource {
 }
 
 model Document {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   userId      String?
-  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
   title       String
   sourceUrl   String?
   mongoDocId  String?
   /// SHA-256 of the ingested bytes; used to skip re-ingesting the same content.
   /// Null for documents ingested before duplicate detection existed.
   contentHash String?
-  createdAt   DateTime @default(now())
+  /// Ingestion runs in the background (IngestionJob); only READY documents are searchable.
+  status      DocumentStatus @default(READY)
+  /// Why ingestion failed (safe to show the user); set when status is FAILED.
+  error       String?
+  chunkCount  Int?
+  /// Which loader produced the chunks: "pdf", "convertible" (converted to PDF) or "structured".
+  pipeline    String?
+  createdAt   DateTime       @default(now())
+  job         IngestionJob?
 
   @@unique([userId, contentHash])
   @@index([userId])
+}
+
+enum DocumentStatus {
+  PROCESSING
+  READY
+  FAILED
+}
+
+/// A queued knowledge-base ingestion: the uploaded bytes wait here until a worker processes them.
+/// Workers claim jobs with FOR UPDATE SKIP LOCKED and hold a lease (lockedUntil) they renew while
+/// working; a job whose worker died becomes claimable again when the lease runs out. The row is
+/// deleted once the document is READY or has permanently FAILED.
+model IngestionJob {
+  id          String    @id @default(cuid())
+  documentId  String    @unique
+  document    Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  userId      String
+  filename    String
+  sourceUrl   String?
+  data        Bytes
+  attempts    Int       @default(0)
+  /// Not before this time (retry backoff).
+  runAfter    DateTime  @default(now())
+  lockedUntil DateTime?
+  lastError   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([runAfter, createdAt])
 }
 
 model Attachment {

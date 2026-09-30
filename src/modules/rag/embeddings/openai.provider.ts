@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { env } from "../../../config/env";
+import { limits } from "../../../config/limits";
 import { EmbeddingProvider } from "./embedding.types";
 
 const MODEL_DIMENSIONS: Record<string, number> = {
@@ -13,7 +14,7 @@ export function createOpenAIEmbeddingProvider(): EmbeddingProvider {
     throw new Error("OPENAI_API_KEY is required when EMBEDDING_PROVIDER=openai");
   }
 
-  const client = new OpenAI({ apiKey: env.openaiApiKey });
+  const client = new OpenAI({ apiKey: env.openaiApiKey, timeout: limits.embeddingTimeoutMs, maxRetries: 2 });
   const model = env.openaiEmbeddingModel;
   const dimensions = MODEL_DIMENSIONS[model] ?? 1536;
 
