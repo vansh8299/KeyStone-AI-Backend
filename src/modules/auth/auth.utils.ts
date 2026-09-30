@@ -16,8 +16,15 @@ export interface AccessTokenPayload extends JwtPayload {
 
 const JWT_ALGORITHM = "HS256";
 
+/**
+ * bcrypt work factor (was 10). bcryptjs is pure JavaScript, so each step up doubles the CPU per
+ * login and sign-up; 11 doubles an attacker's cost while staying quick on small instances.
+ * Existing hashes keep their own cost and still verify.
+ */
+const BCRYPT_ROUNDS = 11;
+
 export function hashPassword(password: string): Promise<string> {
-  return bcrypt.hash(password, 10);
+  return bcrypt.hash(password, BCRYPT_ROUNDS);
 }
 
 export function verifyHash(plain: string, hash: string): Promise<boolean> {

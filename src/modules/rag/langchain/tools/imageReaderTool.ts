@@ -84,7 +84,7 @@ function buildChain() {
   return structured
     .withFallbacks([freeText])
     .pipe(RunnableLambda.from((text: string) => clipText(text.trim(), limits.imageParsedTextMaxChars)))
-    .withConfig({ runName: "ImageReader" });
+    .withConfig({ runName: "ImageReader", timeout: limits.llmTimeoutMs });
 }
 
 export function getImageReaderChain() {

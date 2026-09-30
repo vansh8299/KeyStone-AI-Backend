@@ -1,5 +1,8 @@
 import { randomUUID } from "crypto";
 import { getRedis } from "./redis";
+import { moduleLogger } from "./logger";
+
+const log = moduleLogger("lock");
 
 const held = new Set<string>();
 
@@ -27,7 +30,7 @@ export async function tryLock(name: string, ttlMs: number): Promise<(() => Promi
       return null;
     }
   } catch (err) {
-    console.error(`[lock] Redis unavailable, locking in memory only: ${(err as Error).message}`);
+    log.warn({ err, lock: name }, "Redis unavailable; locking in this process only");
     return async () => releaseLocal();
   }
 

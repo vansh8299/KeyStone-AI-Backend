@@ -1,5 +1,8 @@
 import { getRedis } from "../lib/redis";
 import { rateLimitedError } from "./errors";
+import { moduleLogger } from "../lib/logger";
+
+const log = moduleLogger("rate-limit");
 
 interface Hit {
   count: number;
@@ -60,7 +63,7 @@ export function createRateLimiter({
       if (!Number.isFinite(count)) throw new Error("unexpected MULTI reply");
       return { count, resetInMs: ttl > 0 ? ttl : windowMs };
     } catch (err) {
-      console.error(`[rateLimit] Redis unavailable, counting in memory: ${(err as Error).message}`);
+      log.warn({ err, limiter: name }, "Redis unavailable; counting in this process only");
       return hitMemory(key);
     }
   }
@@ -69,7 +72,11 @@ export function createRateLimiter({
     async consume(...keys: string[]) {
       for (const key of keys) {
         const { count, resetInMs } = await hit(key);
-        if (count > limit) throw rateLimitedError(message, Math.ceil(resetInMs / 1000));
+        if (count > limit) {
+          // The key's kind only (ip / email / user): the key itself can be an email address.
+          log.warn({ limiter: name, keyType: key.split(":")[0], retryAfterS: Math.ceil(resetInMs / 1000) }, "rate limit exceeded");
+          throw rateLimitedError(message, Math.ceil(resetInMs / 1000));
+        }
       }
     },
     async reset(key: string) {

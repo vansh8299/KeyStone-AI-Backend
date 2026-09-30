@@ -2,12 +2,15 @@ import { IncomingMessage } from "http";
 import { Request, Response } from "express";
 import { prisma } from "./lib/prisma";
 import { verifyAccessToken } from "./modules/auth/auth.utils";
+import { setLogUserId } from "./lib/logger";
 
 export interface GraphQLContext {
   prisma: typeof prisma;
   userId: string | null;
   req: Request;
   res: Response;
+  /** Correlates this request's log lines (also returned as the X-Request-Id header). */
+  requestId: string;
 }
 
 export interface SubscriptionContext {
@@ -46,11 +49,13 @@ export async function createContext({
 }): Promise<GraphQLContext> {
   const token = req.cookies?.access_token as string | undefined;
   const payload = token ? verifyAccessToken(token) : null;
+  setLogUserId(payload?.userId); // later log lines for this request name the user
 
   return {
     prisma,
     userId: payload?.userId ?? null,
     req,
     res,
+    requestId: String(res.locals.requestId ?? ""),
   };
 }

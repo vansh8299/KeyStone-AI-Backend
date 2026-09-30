@@ -3,6 +3,9 @@ import type { AgentStatus } from "./langchain/agent";
 import type { AgentStreamEvent } from "./agentChat.service";
 import { getRedis, subscribe } from "../../lib/redis";
 import { isExposedCode } from "../../shared/errors";
+import { moduleLogger } from "../../lib/logger";
+
+const log = moduleLogger("active-turns");
 
 const FINISHED_TTL_MS = 60_000;
 /** A running reply's shared record expires if it stops being updated (e.g. its instance crashed). */
@@ -49,7 +52,7 @@ class TurnRelay {
       .hset(this.k.state, { userId, seq: 0 })
       .pexpire(this.k.state, RUNNING_TTL_MS)
       .exec()
-      .catch((err) => console.error("[activeTurns] relay init failed:", err.message));
+      .catch((err) => log.warn({ err }, "sharing a reply via Redis failed to start"));
   }
 
   push(event: AgentStreamEvent | Failure) {
@@ -74,7 +77,7 @@ class TurnRelay {
           event.type === "FAILED" ? { type: "FAILED", error: serializeError(event.error), seq } : { ...event, seq };
         await redis.publish(this.k.channel, JSON.stringify(relayed));
       })
-      .catch((err) => console.error("[activeTurns] relay write failed:", err.message));
+      .catch((err) => log.warn({ err }, "sharing a reply update via Redis failed"));
   }
 }
 
@@ -217,7 +220,6 @@ async function followRemote(conversationId: string, userId: string): Promise<Asy
 }
 
 const byConversation = new Map<string, ActiveTurn>();
-const running = new Set<Promise<unknown>>();
 
 export const activeTurns = {
   register(conversationId: string, turn: ActiveTurn) {
@@ -236,26 +238,5 @@ export const activeTurns = {
     const local = byConversation.get(conversationId);
     if (local) return local.userId === userId ? local.events() : null;
     return followRemote(conversationId, userId);
-  },
-
-  /** Tracks a running reply so shutdown can let it finish. */
-  track(work: Promise<unknown>) {
-    running.add(work);
-    work.finally(() => running.delete(work)).catch(() => {});
-  },
-
-  /** Waits for running replies to finish, up to timeoutMs; returns how many were still running. */
-  async drain(timeoutMs: number): Promise<number> {
-    if (running.size > 0) {
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([
-        Promise.allSettled([...running]),
-        new Promise((resolve) => {
-          timer = setTimeout(resolve, timeoutMs);
-        }),
-      ]);
-      clearTimeout(timer);
-    }
-    return running.size;
   },
 };

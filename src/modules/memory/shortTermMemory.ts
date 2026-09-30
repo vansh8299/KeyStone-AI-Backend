@@ -8,6 +8,9 @@ import { extractText, NonEmptyTextSchema } from "../rag/langchain/llmOutput";
 import { ChatHistoryMessage, clipHistoryMessage } from "../rag/langchain/history";
 import { loadTree, pathTo } from "../conversation/messageTree";
 import { messageTextWithAttachments } from "../attachment/attachment.service";
+import { moduleLogger } from "../../lib/logger";
+
+const log = moduleLogger("memory");
 
 export interface ShortTermMemory {
   summary: string;
@@ -116,7 +119,7 @@ export async function buildShortTermMemory(branch: BranchMessage[]): Promise<Sho
   try {
     ({ summary, unsummarized } = await foldOverflow(chat));
   } catch (err) {
-    console.error("Short-term memory summarisation failed:", err);
+    log.error({ err }, "short-term memory summarisation failed");
     ({ summary, unsummarized } = splitAtLatestSummary(chat));
   }
 
@@ -137,6 +140,6 @@ export async function refreshShortTermMemory(conversationId: string, leafId: str
     const branch = pathTo(await loadTree(conversationId), leafId);
     await foldOverflow(chatMessages(branch));
   } catch (err) {
-    console.error("Background short-term memory refresh failed:", err);
+    log.error({ err, conversationId }, "short-term memory refresh failed");
   }
 }

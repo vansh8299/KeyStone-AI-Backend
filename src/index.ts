@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import express from "express";
 import compression from "compression";
 import cors from "cors";
@@ -20,11 +21,44 @@ import { formatGraphQLError, formatGraphQLErrors } from "./shared/errorHandling"
 import { errorHandler, notFoundHandler } from "./shared/httpMiddleware";
 import { attachmentRouter } from "./modules/attachment/attachment.routes";
 import { flushTraces } from "./lib/langsmith";
-import { closeMongo } from "./lib/mongo";
-import { closeRedis } from "./lib/redis";
-import { activeTurns } from "./modules/rag/activeTurns";
+import { closeMongo, getMongoDb } from "./lib/mongo";
+import { closeRedis, getRedis } from "./lib/redis";
+import { drainBackground } from "./lib/backgroundTasks";
+import { startIngestionWorker, stopIngestionWorker } from "./modules/rag/ingestionQueue";
 import { validate as graphqlValidate, specifiedRules } from "graphql";
 import { queryLimitsRule } from "./graphql/queryLimits";
+import { operationLogPlugin } from "./graphql/operationLog";
+import { moduleLogger, withRequestContext } from "./lib/logger";
+import { envWarnings } from "./config/env";
+
+const log = moduleLogger("server");
+const httpLog = moduleLogger("http");
+for (const warning of envWarnings) log.warn(warning);
+
+const DEPENDENCY_CHECK_TIMEOUT_MS = 3_000;
+
+function withTimeout(check: () => Promise<unknown>): Promise<"ok" | string> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    check().then(() => "ok" as const),
+    new Promise<string>((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), DEPENDENCY_CHECK_TIMEOUT_MS);
+    }),
+  ])
+    .catch(() => "unreachable")
+    .finally(() => clearTimeout(timer));
+}
+
+/** Pings each backing service; the result names only the state, never connection details. */
+async function checkDependencies(): Promise<Record<string, string>> {
+  const redis = getRedis();
+  const [postgres, mongodb, redisState] = await Promise.all([
+    withTimeout(() => prisma.$queryRaw`SELECT 1`),
+    withTimeout(async () => (await getMongoDb()).command({ ping: 1 })),
+    redis ? withTimeout(() => redis.ping()) : Promise.resolve("not configured"),
+  ]);
+  return { postgres, mongodb, ...(redis ? { redis: redisState } : {}) };
+}
 
 /** Set once the server is running; stops it (draining HTTP requests and closing WebSockets). */
 let stopServer: (() => Promise<void>) | null = null;
@@ -35,12 +69,51 @@ async function main() {
 
   if (env.trustProxy > 0) app.set("trust proxy", env.trustProxy);
   app.disable("x-powered-by");
+  // A request ID for correlating logs: kept from the caller (e.g. a load balancer) if it looks
+  // sane, otherwise generated; echoed back so a user's report can be matched to the logs. Every
+  // log line written while handling the request carries it, and one access-log line closes it.
+  app.use((req, res, next) => {
+    const incoming = req.get("x-request-id");
+    const requestId = incoming && /^[A-Za-z0-9._-]{8,128}$/.test(incoming) ? incoming : randomUUID();
+    res.locals.requestId = requestId;
+    res.set("X-Request-Id", requestId);
+
+    const context: { requestId: string; userId?: string } = { requestId };
+    const startedAt = performance.now();
+    res.on("finish", () => {
+      // originalUrl: mounted routers (e.g. /graphql) rewrite req.path to their own sub-path.
+      const path = req.originalUrl.split("?")[0];
+      const operation = path === "/graphql" ? (req.body as { operationName?: unknown } | undefined)?.operationName : undefined;
+      const entry = {
+        requestId,
+        ...(context.userId ? { userId: context.userId } : {}),
+        method: req.method,
+        path,
+        ...(typeof operation === "string" ? { operation } : {}),
+        status: res.statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+      };
+      if (res.statusCode >= 500) httpLog.error(entry, "request failed");
+      else if (path.startsWith("/health")) httpLog.debug(entry, "request completed");
+      else httpLog.info(entry, "request completed");
+    });
+    withRequestContext(context, next);
+  });
   app.use((_req, res, next) => {
     res.set({
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
       "Referrer-Policy": "no-referrer",
-      ...(env.isProd ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
+      "Cross-Origin-Opener-Policy": "same-origin",
+      ...(env.isProd
+        ? {
+            "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+            // The API serves JSON (attachments set their own policy): nothing should ever run
+            // scripts, load resources or be framed if a response is opened directly. Not in
+            // development, where the Apollo Sandbox page at /graphql needs scripts.
+            "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+          }
+        : {}),
     });
     next();
   });
@@ -76,6 +149,7 @@ async function main() {
     includeStacktraceInErrorResponses: false,
     plugins: [
       ApolloServerPluginDrainHttpServer({ httpServer }),
+      operationLogPlugin,
       {
         async serverWillStart() {
           return {
@@ -107,8 +181,15 @@ async function main() {
     })
   );
 
+  // Liveness: the process is up (cheap, for restart decisions).
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
+  });
+  // Readiness: the dependencies a request needs answer in time (for load balancers and deploys).
+  app.get("/health/ready", async (_req, res) => {
+    const checks = await checkDependencies();
+    const ready = Object.values(checks).every((c) => c === "ok");
+    res.status(ready ? 200 : 503).json({ status: ready ? "ready" : "unavailable", checks });
   });
 
   app.use(attachmentRouter);
@@ -117,19 +198,28 @@ async function main() {
   app.use(errorHandler);
 
   await new Promise<void>((resolve) => httpServer.listen({ port: env.port }, resolve));
-  console.log(`🚀 Server ready at http://localhost:${env.port}/graphql`);
-  console.log(`🔌 Subscriptions ready at ws://localhost:${env.port}/graphql`);
-  if (env.langsmith.enabled) console.log(`🔎 LangSmith tracing on (project "${env.langsmith.project}")`);
+  if (env.ingestionWorker) await startIngestionWorker(env.ingestionConcurrency);
+  log.info(
+    {
+      port: env.port,
+      graphql: `http://localhost:${env.port}/graphql`,
+      subscriptions: `ws://localhost:${env.port}/graphql`,
+      langsmith: env.langsmith.enabled ? env.langsmith.project : false,
+      redis: Boolean(env.redisUrl),
+      ingestionWorker: env.ingestionWorker,
+    },
+    "server ready"
+  );
 }
 
 main().catch(async (err) => {
-  console.error("Fatal error starting server:", err);
+  log.fatal({ err }, "server failed to start");
   await prisma.$disconnect();
   process.exit(1);
 });
 
 process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled promise rejection:", reason);
+  log.error({ err: reason }, "unhandled promise rejection");
 });
 
 let shuttingDown = false;
@@ -142,12 +232,14 @@ let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`${signal} received — finishing in-progress work before exiting…`);
+  log.info({ signal }, "shutting down: finishing in-progress work");
   setTimeout(() => process.exit(1), env.shutdownGraceMs + 15_000).unref(); // last resort
 
-  const unfinished = await activeTurns.drain(env.shutdownGraceMs);
-  if (unfinished > 0) console.warn(`Shutting down with ${unfinished} chat repl${unfinished === 1 ? "y" : "ies"} still running.`);
-  await stopServer?.().catch((err) => console.error("Error while stopping the server:", err));
+  await stopIngestionWorker(); // take no new jobs; the ones in progress are drained below
+  const unfinished = await drainBackground(env.shutdownGraceMs);
+  if (unfinished > 0) log.warn({ unfinished }, "shutting down with background work still running");
+  await stopServer?.().catch((err) => log.error({ err }, "error while stopping the server"));
+  log.info("shutdown complete");
   await Promise.allSettled([flushTraces(), prisma.$disconnect(), closeMongo(), closeRedis()]);
   process.exit(0);
 }

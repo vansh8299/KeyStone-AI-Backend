@@ -9,6 +9,9 @@ import { traceConfig } from "../../../lib/langsmith";
 import { runStructuredPipeline } from "../loaders/structuredPipeline";
 import { ocrPdfPages, pdfPageCount } from "./pdfOcr";
 import { limits, clipText } from "../../../config/limits";
+import { moduleLogger } from "../../../lib/logger";
+
+const log = moduleLogger("document-reader");
 
 export const DOCUMENT_EXTENSIONS = ["pdf", "docx", "txt", "md", "markdown", "csv", "xlsx", "xls"] as const;
 export type DocumentExtension = (typeof DOCUMENT_EXTENSIONS)[number];
@@ -149,7 +152,7 @@ export async function readDocument(filename: string, ext: DocumentExtension, dat
   try {
     docs = await loadDocuments(ext, data);
   } catch (err) {
-    console.error(`Reading ${ext} document failed:`, err);
+    log.error({ err, ext }, "reading a document failed");
     throw new DocumentReadError(
       ext === "pdf"
         ? "This PDF couldn't be read. It may be damaged or password-protected."

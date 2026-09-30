@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { env } from "../../../config/env";
+import { limits } from "../../../config/limits";
 import { EmbeddingProvider } from "./embedding.types";
 
 const MODEL_DIMENSIONS: Record<string, number> = {
@@ -14,7 +15,7 @@ export function createGeminiEmbeddingProvider(): EmbeddingProvider {
 
   const client = new GoogleGenerativeAI(env.geminiApiKey);
   const model = env.geminiEmbeddingModel;
-  const genModel = client.getGenerativeModel({ model });
+  const genModel = client.getGenerativeModel({ model }, { timeout: limits.embeddingTimeoutMs });
   const dimensions = MODEL_DIMENSIONS[model] ?? 768;
 
   return {

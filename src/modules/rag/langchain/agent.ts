@@ -34,6 +34,10 @@ import {
   GuardrailVerdict,
 } from "./llmOutput";
 import { AnswerDraft, reviewAnswer, reviseAnswer, withheldAnswerMessage } from "./guardrails";
+import { runInBackground } from "../../../lib/backgroundTasks";
+import { moduleLogger } from "../../../lib/logger";
+
+const log = moduleLogger("agent");
 
 const knowledgeBaseSearchTool = createKnowledgeBaseSearchTool();
 const llmKnowledgeTool = createLlmKnowledgeTool();
@@ -286,9 +290,17 @@ async function askForClarification(state: GraphStateType) {
 const KB_LIST_MAX = 50;
 
 async function listKnowledgeBase(state: GraphStateType) {
-  const documents = state.userId ? await documentService.findManyByUser(state.userId) : [];
+  const all = state.userId ? await documentService.findManyByUser(state.userId) : [];
+  const documents = all.filter((d) => d.status === "READY");
+  const processing = all.filter((d) => d.status === "PROCESSING").length;
+  const stillProcessing =
+    processing > 0
+      ? `\n\n${processing} more ${processing === 1 ? "is" : "are"} still being processed and will be searchable shortly.`
+      : "";
   const answer =
-    documents.length === 0
+    documents.length === 0 && processing > 0
+      ? `Your documents are still being processed.${stillProcessing}`
+      : documents.length === 0
       ? "Your knowledge base is empty right now. Upload documents from the Knowledge base page, " +
         "then ask me questions about them."
       : `Your knowledge base has ${documents.length} document${documents.length === 1 ? "" : "s"}:\n\n` +
@@ -297,6 +309,7 @@ async function listKnowledgeBase(state: GraphStateType) {
           .map((d) => `- ${d.title} (added ${d.createdAt.toISOString().slice(0, 10)})`)
           .join("\n") +
         (documents.length > KB_LIST_MAX ? `\n- …and ${documents.length - KB_LIST_MAX} more` : "") +
+        stillProcessing +
         "\n\nAsk me anything about them.";
   return {
     answer,
@@ -352,8 +365,11 @@ async function answerFromKb(state: GraphStateType) {
           `Mention which source(s) you used. If the context does NOT contain information ` +
           `relevant to the question — even if it's on a related general topic — respond with ` +
           `EXACTLY the single word "${KB_NO_MATCH_MARKER}" and nothing else. Do not say "the ` +
-          `context doesn't mention X" as your answer; use the marker for that instead. The earlier ` +
-          `conversation is included only so your reply fits it — the facts must come from the context.`,
+          `context doesn't mention X" as your answer; use the marker for that instead. Also use ` +
+          `the marker when the question is about your earlier conversations with the user or about ` +
+          `files they attached rather than about these documents — another step answers from those. ` +
+          `The earlier conversation is included only so your reply fits it — the facts must come ` +
+          `from the context.`,
         memoryContext(state)
       )
     ),
@@ -361,10 +377,27 @@ async function answerFromKb(state: GraphStateType) {
     new HumanMessage(`Context:\n${context}\n\nQuestion: ${state.question}`),
   ]);
 
-  const answer = extractText(response.content).trim();
+  const text = extractText(response.content).trim();
+  // Models sometimes write "the provided documents don't mention X" instead of the marker; that
+  // is a no-match too, so the question still reaches the steps that use memory and the web.
+  const answer = isNotInContextReply(text) ? KB_NO_MATCH_MARKER : text;
   return answer === KB_NO_MATCH_MARKER
     ? { answer }
     : { answer, toolsUsed: [KNOWLEDGE_BASE_TOOL_NAME], sourceContext: context };
+}
+
+const NOT_FOUND_PHRASE =
+  /\b(?:cannot|can't|can not|could not|couldn't|unable to|do not|don't|does not|doesn't|did not|didn't|no|not)\b[^.!?\n]{0,60}\b(?:find|found|see|contain|contains|mention|mentions|include|includes|information|details|reference)\b/i;
+const SOURCE_WORDS = /\b(?:context|document|documents|source|sources|material|provided|knowledge base|text|files?|resume)\b/i;
+
+/**
+ * A short reply whose opening sentence only says the documents don't cover the question. Longer
+ * answers that merely note a gap ("the document doesn't mention X, but…") are kept.
+ */
+export function isNotInContextReply(text: string): boolean {
+  if (text.length > 250) return false;
+  const firstSentence = text.split(/(?<=[.!?])\s/)[0];
+  return NOT_FOUND_PHRASE.test(firstSentence) && SOURCE_WORDS.test(firstSentence);
 }
 
 function routeAfterKbAnswer(state: GraphStateType): "tryOwnKnowledge" | "checkAnswer" {
@@ -435,7 +468,7 @@ async function checkAnswer(state: GraphStateType) {
 
   const allIssues = [...issues, { category: verdict.category, feedback: verdict.feedback }];
   if (revisions >= limits.guardrailMaxRevisions) {
-    console.warn(`Guardrail withheld an answer after ${revisions} revision(s): ${verdict.category}`);
+    log.warn({ revisions, category: verdict.category }, "answer review withheld the answer");
     return {
       answer: withheldAnswerMessage(verdict.category),
       guardrail: { status: "withheld" as const, revisions, issues: allIssues },
@@ -546,7 +579,7 @@ const STREAMED_ANSWER_NODES: Record<string, string | null> = {
   webSearch: null,
 };
 
-function createTokenForwarder(onToken: TokenHandler) {
+function createTokenForwarder(onToken: TokenHandler, onSwitch?: () => void) {
   let currentNode: string | undefined;
   let held = "";
   let releasing = false;
@@ -556,6 +589,7 @@ function createTokenForwarder(onToken: TokenHandler) {
     const marker = STREAMED_ANSWER_NODES[node];
 
     if (node !== currentNode) {
+      if (currentNode !== undefined && releasing) onSwitch?.(); // the previous step's text was shown
       currentNode = node;
       held = "";
       releasing = marker === null;
@@ -625,10 +659,17 @@ async function runGraph(
   // once (onReset) and the approved answer is sent at the end.
   let streamed = "";
   const forward = onToken
-    ? createTokenForwarder((text) => {
-        streamed += text;
-        onToken(text);
-      })
+    ? createTokenForwarder(
+        (text) => {
+          streamed += text;
+          onToken(text);
+        },
+        () => {
+          if (!streamed) return;
+          streamed = "";
+          onReset?.();
+        }
+      )
     : null;
   const stream = await app.stream(input, { ...traced, ...config, streamMode: ["messages", "updates"] });
   for await (const [mode, payload] of stream as AsyncIterable<[string, unknown]>) {
@@ -651,7 +692,7 @@ async function runGraph(
     return { status: "interrupted", threadId, interrupt: ClarificationInterruptSchema.parse(pending[0].value) };
   }
 
-  deleteAgentThread(threadId).catch((err) => console.error("Checkpoint cleanup failed:", err));
+  runInBackground("checkpoint cleanup", () => deleteAgentThread(threadId));
   const values = snapshot.values as GraphStateType;
   // Make sure the client ends up showing exactly the final answer (a revision, a withheld notice,
   // or a node that post-processed what it streamed).

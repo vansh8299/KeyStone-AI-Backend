@@ -2,6 +2,7 @@ import type { FeedbackRating } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { badUserInputError, notFoundError } from "../../shared/errors";
 import { langsmithFeedback } from "../../lib/langsmith";
+import { runInBackground } from "../../lib/backgroundTasks";
 
 export const FEEDBACK_CATEGORIES = [
   "not_accurate",
@@ -36,7 +37,7 @@ export const feedbackService = {
 
     if (rating === null) {
       await prisma.messageFeedback.deleteMany({ where: { messageId, userId } });
-      void langsmithFeedback.sync(messageId, runId, null);
+      runInBackground("LangSmith feedback sync", () => langsmithFeedback.sync(messageId, runId, null));
       return null;
     }
     const cleared = { categories: [], reason: null };
@@ -47,7 +48,7 @@ export const feedbackService = {
       create: { messageId, userId, rating, ...(rating === "DISLIKE" && given ? given : cleared) },
       update: { rating, ...update },
     });
-    void langsmithFeedback.sync(messageId, runId, saved);
+    runInBackground("LangSmith feedback sync", () => langsmithFeedback.sync(messageId, runId, saved));
     return saved;
   },
 

@@ -1,5 +1,8 @@
 import Redis from "ioredis";
 import { env } from "../config/env";
+import { moduleLogger } from "./logger";
+
+const log = moduleLogger("redis");
 
 /**
  * Shared state for running several backend instances: rate-limit counters, in-progress chat
@@ -17,7 +20,7 @@ function connect(): Redis {
     maxRetriesPerRequest: 2,
     enableOfflineQueue: true,
   });
-  redis.on("error", (err) => console.error("[redis]", err.message));
+  redis.on("error", (err) => log.error({ err }, "Redis connection error"));
   return redis;
 }
 

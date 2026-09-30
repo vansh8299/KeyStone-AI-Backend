@@ -29,7 +29,8 @@ attachmentRouter.get("/attachments/:id", cookieParser(), async (req, res, next) 
       "Content-Disposition": `${attachment.kind === "image" ? "inline" : "attachment"}; filename="${encodeURIComponent(attachment.filename)}"`,
       "Cache-Control": "private, max-age=86400, immutable",
       "X-Content-Type-Options": "nosniff",
-      "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'",
+      // Opened directly, an uploaded file gets no scripts, no network and an isolated origin.
+      "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
     });
     res.end(attachment.data);
   } catch (err) {

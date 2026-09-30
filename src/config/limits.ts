@@ -55,6 +55,19 @@ export const limits = {
   pdfOcrConcurrency: 3,
   pdfOcrRenderWidth: 1600,
 
+  // External calls: fail in bounded time instead of hanging a reply. LangChain retries 6 times
+  // with backoff by default, which turned a quota error into a minute of waiting.
+  llmTimeoutMs: 90_000,
+  llmMaxRetries: 2,
+  embeddingTimeoutMs: 30_000,
+
+  // Knowledge-base ingestion queue (ingestionQueue.ts).
+  ingestionMaxAttempts: 3,
+  ingestionRetryBaseMs: 30_000, // then 60 s, … (exponential)
+  ingestionLeaseMs: 5 * 60_000, // renewed every third of this while a worker is on the job
+  ingestionIdlePollMs: env.ingestionIdlePollMs,
+  ingestionErrorBackoffMs: 15_000,
+
   guardrailMaxRevisions: 2,
   guardrailAnswerMaxChars: 8_000,
 

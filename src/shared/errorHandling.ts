@@ -1,6 +1,9 @@
 import { randomUUID } from "crypto";
 import { GraphQLError, GraphQLFormattedError } from "graphql";
 import { ErrorCode, isExposedCode } from "./errors";
+import { moduleLogger } from "../lib/logger";
+
+const log = moduleLogger("errors");
 
 export interface ClientError {
   code: string;
@@ -123,7 +126,7 @@ export function toClientError(error: unknown): ClientError {
 
 export function logUnexpectedError(error: unknown, context: string): string {
   const errorId = randomUUID();
-  console.error(`[${errorId}] ${context}:`, error);
+  log.error({ err: error, errorId, context }, "unexpected error");
   return errorId;
 }
 

@@ -7,6 +7,9 @@ import { notFoundError } from "../../shared/errors";
 import { feedbackService } from "../feedback/feedback.service";
 import { loadTree, pathTo, latestLeafUnder, hasChildren, type MessageTree } from "./messageTree";
 import type { ConversationPage } from "./conversation.schemas";
+import { moduleLogger } from "../../lib/logger";
+
+const log = moduleLogger("conversation");
 
 export interface CreateConversationInput {
   userId: string;
@@ -157,7 +160,7 @@ export const conversationService = {
     await Promise.all(
       pendingThreadIds.map((threadId) =>
         deleteAgentThread(threadId).catch((err) =>
-          console.error(`Failed to delete checkpoints for thread ${threadId}:`, err)
+          log.error({ err, threadId }, "deleting agent checkpoints failed")
         )
       )
     );

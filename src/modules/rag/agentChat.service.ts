@@ -29,6 +29,11 @@ import {
   documentIdsOf,
   MessageAttachment,
 } from "../attachment/attachment.service";
+import { runInBackground, trackBackground } from "../../lib/backgroundTasks";
+import { moduleLogger } from "../../lib/logger";
+import { toClientError } from "../../shared/errorHandling";
+
+const log = moduleLogger("chat");
 
 function mapToolsToSource(toolsUsed: string[]): "RAG" | "WEB_SEARCH" | "HYBRID" | "NONE" {
   const usedKb = toolsUsed.includes(KNOWLEDGE_BASE_TOOL_NAME);
@@ -93,7 +98,7 @@ export function streamChatTurn(
     .finally(() => {
       if (conversationId) activeTurns.release(conversationId, turn);
     });
-  activeTurns.track(work);
+  trackBackground(work);
 
   return turn.events();
 }
@@ -105,7 +110,54 @@ export async function* attachToChatTurn(userId: string, conversationId: string):
   yield* events;
 }
 
-export async function runChatTurn({
+/**
+ * One chat turn, logged as a single summary line: which conversation, how long it took (and until
+ * the first token), which sources answered, and how the answer review went. Failures are logged
+ * with their error code; unexpected ones are also logged in full where they're turned into errors.
+ */
+export async function runChatTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
+  const startedAt = performance.now();
+  let firstTokenMs: number | undefined;
+  let conversationId = input.conversationId ?? undefined;
+  const branch = input.editMessageId ? "edit" : input.regenerateMessageId ? "regenerate" : "new";
+  try {
+    const result = await runChatTurnInner({
+      ...input,
+      onConversation: (id) => {
+        conversationId = id;
+        input.onConversation?.(id);
+      },
+      onToken: (text) => {
+        firstTokenMs ??= Math.round(performance.now() - startedAt);
+        input.onToken?.(text);
+      },
+    });
+    log.info(
+      {
+        userId: input.userId,
+        conversationId: result.conversationId,
+        branch,
+        durationMs: Math.round(performance.now() - startedAt),
+        firstTokenMs,
+        tools: result.toolsUsed,
+        review: result.review,
+        needsHumanInput: result.needsHumanInput,
+        attachments: input.attachmentIds?.length ?? 0,
+      },
+      "chat turn finished"
+    );
+    const { review: _review, ...publicResult } = result;
+    return publicResult;
+  } catch (err) {
+    log.warn(
+      { userId: input.userId, conversationId, branch, durationMs: Math.round(performance.now() - startedAt), errorCode: toClientError(err).code },
+      "chat turn failed"
+    );
+    throw err;
+  }
+}
+
+async function runChatTurnInner({
   userId,
   question,
   conversationId,
@@ -116,7 +168,7 @@ export async function runChatTurn({
   onToken,
   onStatus,
   onReset,
-}: ChatTurnInput): Promise<ChatTurnResult> {
+}: ChatTurnInput): Promise<ChatTurnResult & { review: string | null }> {
   const newAttachments =
     attachmentIds != null && !regenerateMessageId
       ? await attachmentService.resolve(userId, attachmentIds, conversationId ?? null)
@@ -302,14 +354,15 @@ export async function runChatTurn({
       : null,
   ]);
 
-  void refreshShortTermMemory(convoId, assistantMessageId);
-  void rememberConversation(convoId, assistantMessageId);
+  runInBackground("short-term memory", () => refreshShortTermMemory(convoId, assistantMessageId));
+  runInBackground("long-term memory", () => rememberConversation(convoId, assistantMessageId));
 
   return {
     answer,
     toolsUsed,
     conversationId: convoId,
     needsHumanInput: interrupted,
+    review: result.status === "completed" ? result.guardrail.status : null,
     userMessageId,
     assistantMessageId,
   };

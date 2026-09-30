@@ -3,6 +3,9 @@ import { StringOutputParser } from "@langchain/core/output_parsers";
 import { getVisionModel } from "./chatModel";
 import { traceConfig } from "../../../lib/langsmith";
 import { limits } from "../../../config/limits";
+import { moduleLogger } from "../../../lib/logger";
+
+const log = moduleLogger("ocr");
 
 const NO_TEXT = "NO_TEXT";
 
@@ -34,7 +37,8 @@ const ocrChain = () =>
     ],
   ])
     .pipe(getVisionModel(limits.pdfOcrPageMaxTokens))
-    .pipe(new StringOutputParser());
+    .pipe(new StringOutputParser())
+    .withConfig({ timeout: limits.llmTimeoutMs });
 
 async function mapLimited<T, R>(items: T[], concurrency: number, task: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -89,7 +93,7 @@ export async function ocrPdfPages(pdf: Buffer, pageNumbers: number[]): Promise<M
       ).trim();
       if (text && text !== NO_TEXT) texts.set(shot.pageNumber, text);
     } catch (err) {
-      console.error(`OCR of PDF page ${shot.pageNumber} failed:`, err);
+      log.warn({ err, page: shot.pageNumber }, "OCR of a PDF page failed");
     }
   });
   return texts;

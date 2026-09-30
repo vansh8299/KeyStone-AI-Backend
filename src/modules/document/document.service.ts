@@ -16,8 +16,9 @@ export const documentService = {
     return document;
   },
 
+  /** The user's searchable documents (READY; others have no chunks yet or failed). */
   async idsForUser(userId: string): Promise<string[]> {
-    const rows = await prisma.document.findMany({ where: { userId }, select: { id: true } });
+    const rows = await prisma.document.findMany({ where: { userId, status: "READY" }, select: { id: true } });
     return rows.map((r) => r.id);
   },
 };

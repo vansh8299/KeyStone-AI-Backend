@@ -2,6 +2,9 @@ import { getChatModel } from "../rag/langchain/chatModel";
 import { traceConfig, type TraceContext } from "../../lib/langsmith";
 import { extractText, NonEmptyTextSchema } from "../rag/langchain/llmOutput";
 import { limits } from "../../config/limits";
+import { moduleLogger } from "../../lib/logger";
+
+const log = moduleLogger("conversation");
 
 const TITLE_MAX_LENGTH = 60;
 
@@ -34,7 +37,7 @@ export async function generateTitle(firstMessage: string, trace?: TraceContext):
     );
     return title.success ? clamp(title.data) : fallbackTitle(firstMessage);
   } catch (err) {
-    console.error("Conversation title generation failed:", err);
+    log.warn({ err }, "conversation title generation failed");
     return fallbackTitle(firstMessage);
   }
 }
