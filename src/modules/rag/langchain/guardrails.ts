@@ -39,6 +39,7 @@ const REVIEW_PROMPT =
 
 function describeDraft({ question, answer, sourceContext, history, memory }: AnswerDraft): string {
   return (
+    (memory.userName ? `The signed-in user's name (from their account): ${memory.userName}\n\n` : "") +
     (memory.conversationSummary ? `Summary of the earlier conversation:\n${memory.conversationSummary}\n\n` : "") +
     (history.length > 0 ? `Recent conversation:\n${formatHistoryTranscript(history)}\n\n` : "") +
     (memory.pastConversations

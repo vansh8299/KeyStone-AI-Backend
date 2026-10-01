@@ -229,15 +229,17 @@ async function runChatTurnInner({
   const documentIds = [
     ...new Set([...documentIdsOf([{ metadata: { attachments } }]), ...documentIdsOf(branch)]),
   ].slice(0, limits.documentsPerConversation);
-  const [shortTerm, pastConversations, documents, knowledgeBaseDocumentIds] = await Promise.all([
+  const [shortTerm, pastConversations, documents, knowledgeBaseDocumentIds, account] = await Promise.all([
     buildShortTermMemory(branch),
     retrievePastConversations(userId, convoId, agentQuestion),
     attachmentService.documentContext(documentIds, agentQuestion),
     // Fetched now, alongside the memory, rather than mid-answer by the knowledge-base search.
     documentService.idsForUser(userId),
+    prisma.user.findUnique({ where: { id: userId }, select: { name: true } }),
   ]);
   const memory = {
     userId,
+    userName: account?.name?.trim() || undefined,
     ...shortTerm,
     pastConversations,
     attachedImages: formatImagesForPrompt(attachments),

@@ -28,6 +28,8 @@ export function formatHistoryTranscript(history: ChatHistoryMessage[]): string {
 }
 
 export interface MemoryContext {
+  /** The signed-in user's name from their account. */
+  userName?: string;
   conversationSummary?: string;
   pastConversations?: string;
   attachedImages?: string;
@@ -36,9 +38,15 @@ export interface MemoryContext {
 
 export function withMemoryContext(
   systemPrompt: string,
-  { conversationSummary, pastConversations, attachedImages, attachedDocuments }: MemoryContext
+  { userName, conversationSummary, pastConversations, attachedImages, attachedDocuments }: MemoryContext
 ): string {
   let prompt = systemPrompt;
+  if (userName) {
+    prompt +=
+      `\n\nThe signed-in user's name, from their account, is "${userName}". If you address them by ` +
+      `name, use this one — a different name in your memory of past conversations was someone ` +
+      `else, or mentioned in passing, not the user.`;
+  }
   if (attachedDocuments) {
     prompt +=
       `\n\nThe user attached document(s) in this conversation; their content is below (long ` +
