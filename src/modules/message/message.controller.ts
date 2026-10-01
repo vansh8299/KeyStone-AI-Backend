@@ -25,5 +25,10 @@ export const messageController = {
       const { langsmithRunId: _internal, ...visible } = metadata as Record<string, unknown>;
       return visible;
     },
+    tokenUsage: ({ inputTokens, outputTokens, totalTokens }: {
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      totalTokens?: number | null;
+    }) => (totalTokens == null ? null : { inputTokens: inputTokens ?? 0, outputTokens: outputTokens ?? 0, totalTokens }),
   },
 };
