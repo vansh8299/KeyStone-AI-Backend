@@ -110,6 +110,10 @@ const GraphState = Annotation.Root({
     default: () => "",
     reducer: (_prev, next) => next,
   }),
+  userName: Annotation<string>({
+    default: () => "",
+    reducer: (_prev, next) => next,
+  }),
   attachedImages: Annotation<string>({
     default: () => "",
     reducer: (_prev, next) => next,
@@ -171,6 +175,7 @@ type GraphStateType = typeof GraphState.State;
 
 function memoryContext(state: GraphStateType) {
   return {
+    userName: state.userName,
     conversationSummary: state.conversationSummary,
     pastConversations: state.pastConversations,
     attachedImages: state.attachedImages,
@@ -712,6 +717,7 @@ export async function askAgent(
   question: string,
   memory: {
     userId: string;
+    userName?: string;
     history: ChatHistoryMessage[];
     summary: string;
     pastConversations?: string;
@@ -731,6 +737,7 @@ export async function askAgent(
       history: memory.history,
       conversationSummary: memory.summary,
       pastConversations: memory.pastConversations ?? "",
+      userName: memory.userName ?? "",
       attachedImages: memory.attachedImages ?? "",
       attachedDocuments: memory.attachedDocuments ?? "",
       documentOverview: memory.documentOverview ?? "",

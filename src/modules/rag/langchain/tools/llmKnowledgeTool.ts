@@ -11,7 +11,7 @@ export const CANNOT_ANSWER_MARKER = "NEEDS_WEB_SEARCH";
 
 export function createLlmKnowledgeTool() {
   return tool(
-    async ({ question, history, conversationSummary, pastConversations, attachedImages, attachedDocuments }): Promise<string> => {
+    async ({ question, history, userName, conversationSummary, pastConversations, attachedImages, attachedDocuments }): Promise<string> => {
       const response = await getChatModel().invoke([
         new SystemMessage(
           withMemoryContext(
@@ -37,7 +37,7 @@ export function createLlmKnowledgeTool() {
               `time-sensitive), or you're genuinely not confident in the answer, respond with EXACTLY ` +
               `the single word "${CANNOT_ANSWER_MARKER}" and nothing else — do not guess and do not ` +
               `add any other text alongside that word.`,
-            { conversationSummary, pastConversations, attachedImages, attachedDocuments }
+            { userName, conversationSummary, pastConversations, attachedImages, attachedDocuments }
           )
         ),
         ...toLangChainMessages(history ?? []),
@@ -55,6 +55,7 @@ export function createLlmKnowledgeTool() {
           .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() }))
           .optional()
           .describe("Previous messages in the conversation, oldest first"),
+        userName: z.string().optional().describe("The signed-in user's name, from their account"),
         conversationSummary: z
           .string()
           .optional()
