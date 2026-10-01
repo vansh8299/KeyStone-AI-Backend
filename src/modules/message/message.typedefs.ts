@@ -14,6 +14,13 @@ export const messageTypeDefs = gql`
     NONE
   }
 
+  "Tokens used to produce an assistant reply, across every LLM call of that turn."
+  type TokenUsage {
+    inputTokens: Int!
+    outputTokens: Int!
+    totalTokens: Int!
+  }
+
   type Message {
     id: ID!
     conversationId: String!
@@ -26,6 +33,8 @@ export const messageTypeDefs = gql`
     content: String!
     source: MessageSource
     metadata: JSON
+    "Null for user messages, and for replies saved before usage was recorded or whose provider reported none."
+    tokenUsage: TokenUsage
     createdAt: DateTime!
   }
 

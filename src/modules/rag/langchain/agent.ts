@@ -36,6 +36,7 @@ import {
 import { AnswerDraft, reviewAnswer, reviseAnswer, withheldAnswerMessage } from "./guardrails";
 import { runInBackground } from "../../../lib/backgroundTasks";
 import { moduleLogger } from "../../../lib/logger";
+import { TokenUsage, TokenUsageTracker } from "./tokenUsage";
 
 const log = moduleLogger("agent");
 
@@ -569,9 +570,10 @@ function getCompiledGraph() {
   return compiledGraphPromise;
 }
 
+/** tokenUsage: every LLM call this run made, added up; null when the provider reported none. */
 export type AgentResult =
-  | { status: "completed"; answer: string; toolsUsed: string[]; guardrail: GuardrailOutcome }
-  | { status: "interrupted"; threadId: string; interrupt: ClarificationInterrupt };
+  | { status: "completed"; answer: string; toolsUsed: string[]; guardrail: GuardrailOutcome; tokenUsage: TokenUsage | null }
+  | { status: "interrupted"; threadId: string; interrupt: ClarificationInterrupt; tokenUsage: TokenUsage | null };
 
 export class NoPausedRunError extends Error {}
 
@@ -676,7 +678,13 @@ async function runGraph(
         }
       )
     : null;
-  const stream = await app.stream(input, { ...traced, ...config, streamMode: ["messages", "updates"] });
+  const usage = new TokenUsageTracker();
+  const stream = await app.stream(input, {
+    ...traced,
+    ...config,
+    callbacks: [usage],
+    streamMode: ["messages", "updates"],
+  });
   for await (const [mode, payload] of stream as AsyncIterable<[string, unknown]>) {
     if (mode === "messages") {
       const [chunk, metadata] = payload as [{ content: unknown }, { langgraph_node?: string }];
@@ -694,7 +702,12 @@ async function runGraph(
   const snapshot = await app.getState(config);
   const pending = snapshot.tasks.flatMap((task) => task.interrupts);
   if (pending.length > 0) {
-    return { status: "interrupted", threadId, interrupt: ClarificationInterruptSchema.parse(pending[0].value) };
+    return {
+      status: "interrupted",
+      threadId,
+      interrupt: ClarificationInterruptSchema.parse(pending[0].value),
+      tokenUsage: usage.total(),
+    };
   }
 
   runInBackground("checkpoint cleanup", () => deleteAgentThread(threadId));
@@ -710,6 +723,7 @@ async function runGraph(
     answer: values.answer,
     toolsUsed: values.guardrail.status === "withheld" ? [] : values.toolsUsed,
     guardrail: values.guardrail,
+    tokenUsage: usage.total(),
   };
 }
 

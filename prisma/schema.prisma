@@ -76,6 +76,10 @@ model Message {
   source         MessageSource?
   metadata       Json?
   summary        String?          @db.Text
+  /// Tokens used to produce an assistant reply (all LLM calls of the turn); null for user messages and older replies.
+  inputTokens    Int?
+  outputTokens   Int?
+  totalTokens    Int?
   feedback       MessageFeedback?
   createdAt      DateTime         @default(now())
 
