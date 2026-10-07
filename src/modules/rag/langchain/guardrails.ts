@@ -1,5 +1,6 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { getAnswerModel, getChatModel } from "./chatModel";
+import { FILE_TYPES } from "../responseFiles/formats";
 import { ChatHistoryMessage, MemoryContext, formatHistoryTranscript, toLangChainMessages, withMemoryContext } from "./history";
 import { extractText, GuardrailVerdict, GuardrailVerdictSchema, NonEmptyTextSchema, parseJsonFromLlm } from "./llmOutput";
 import { limits, clipText } from "../../../config/limits";
@@ -40,6 +41,12 @@ const REVIEW_PROMPT =
 function describeDraft({ question, answer, sourceContext, history, memory }: AnswerDraft): string {
   return (
     (memory.userName ? `The signed-in user's name (from their account): ${memory.userName}\n\n` : "") +
+    (memory.outputFile
+      ? `The user asked for this reply as a ${FILE_TYPES[memory.outputFile].label} (.${memory.outputFile}). ` +
+        `After this review the system turns the reply into that file automatically and attaches it ` +
+        `as a download — the reply does not need to (and cannot) attach it itself. Judge the reply as ` +
+        `the file's content; never reject it because it "only provides text" or "doesn't generate the file".\n\n`
+      : "") +
     (memory.conversationSummary ? `Summary of the earlier conversation:\n${memory.conversationSummary}\n\n` : "") +
     (history.length > 0 ? `Recent conversation:\n${formatHistoryTranscript(history)}\n\n` : "") +
     (memory.pastConversations
