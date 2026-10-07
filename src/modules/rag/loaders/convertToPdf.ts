@@ -1,6 +1,7 @@
 import mammoth from "mammoth";
 import MarkdownIt from "markdown-it";
 import { getExtension } from "./fileType";
+import { launchBrowser } from "../../../lib/browser";
 
 const md = new MarkdownIt();
 
@@ -60,13 +61,7 @@ function escapeHtml(text: string): string {
 }
 
 export async function renderHtmlToPdf(html: string): Promise<Buffer> {
-  const { default: puppeteer } = await import("puppeteer");
-
-  const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: runningAsRoot ? ["--no-sandbox"] : [],
-  });
+  const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
     await page.setJavaScriptEnabled(false);
