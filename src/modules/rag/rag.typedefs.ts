@@ -40,7 +40,7 @@ export const ragTypeDefs = gql`
     filename: String!
     mimeType: String!
     size: Int!
-    "pdf or docx"
+    "The file's extension: pdf, docx, xlsx, pptx, csv, json, py, …"
     format: String!
   }
 

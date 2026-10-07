@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getAnswerModel } from "../chatModel";
 import { toLangChainMessages, withMemoryContext } from "../history";
 import { extractText } from "../llmOutput";
+import { FILE_FORMATS } from "../../responseFiles/formats";
 
 export const LLM_KNOWLEDGE_TOOL_NAME = "llm_knowledge";
 
@@ -57,7 +58,7 @@ export function createLlmKnowledgeTool() {
           .describe("Previous messages in the conversation, oldest first"),
         userName: z.string().optional().describe("The signed-in user's name, from their account"),
         outputFile: z
-          .enum(["pdf", "docx", ""])
+          .enum([...FILE_FORMATS, ""])
           .optional()
           .describe("The user asked for the reply as a downloadable file in this format"),
         conversationSummary: z

@@ -36,6 +36,7 @@ import {
 import { AnswerDraft, reviewAnswer, reviseAnswer, withheldAnswerMessage } from "./guardrails";
 import { runInBackground } from "../../../lib/backgroundTasks";
 import { moduleLogger } from "../../../lib/logger";
+import type { FileFormat } from "../responseFiles/formats";
 import { TokenUsage, TokenUsageTracker } from "./tokenUsage";
 
 const log = moduleLogger("agent");
@@ -111,7 +112,7 @@ const GraphState = Annotation.Root({
     default: () => "",
     reducer: (_prev, next) => next,
   }),
-  outputFile: Annotation<"pdf" | "docx" | "">({
+  outputFile: Annotation<FileFormat | "">({
     default: () => "",
     reducer: (_prev, next) => next,
   }),
@@ -738,7 +739,7 @@ export async function askAgent(
     userId: string;
     userName?: string;
     /** The user asked for the reply as a downloadable file in this format. */
-    outputFile?: "pdf" | "docx";
+    outputFile?: FileFormat;
     history: ChatHistoryMessage[];
     summary: string;
     pastConversations?: string;

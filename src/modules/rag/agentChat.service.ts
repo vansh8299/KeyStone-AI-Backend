@@ -32,7 +32,8 @@ import {
 import { runInBackground, trackBackground } from "../../lib/backgroundTasks";
 import { moduleLogger } from "../../lib/logger";
 import { toClientError } from "../../shared/errorHandling";
-import { detectFileRequest, FILE_FORMAT_LABELS } from "./responseFiles/fileRequest";
+import { detectFileRequest, FILE_FORMAT_LABELS, fileKind } from "./responseFiles/fileRequest";
+import { ResponseFileError } from "./responseFiles/renderFile";
 import { createResponseFile, type ResponseFile } from "./responseFiles/responseFile";
 
 const log = moduleLogger("chat");
@@ -318,14 +319,19 @@ async function runChatTurnInner({
     result.status === "completed" &&
     result.guardrail.status !== "withheld" &&
     result.answer.trim() &&
-    !isFileRefusal(result.answer)
+    // Spreadsheets and code files come from the reply's tables or code block, so a refusal that
+    // still has one is usable; for the rest, the whole reply would be the file.
+    (["spreadsheet", "code"].includes(fileKind(fileRequest.format)) || !isFileRefusal(result.answer))
   ) {
     onStatus?.("CREATING_FILE");
     try {
       files = [await createResponseFile({ userId, conversationId: convoId, markdown: result.answer, request: fileRequest })];
     } catch (err) {
       log.error({ err, conversationId: convoId, format: fileRequest.format }, "creating a response file failed");
-      fileError = `The ${FILE_FORMAT_LABELS[fileRequest.format]} couldn't be created. Ask again to retry.`;
+      fileError =
+        err instanceof ResponseFileError
+          ? `The ${FILE_FORMAT_LABELS[fileRequest.format]} couldn't be created: ${err.message}`
+          : `The ${FILE_FORMAT_LABELS[fileRequest.format]} couldn't be created. Ask again to retry.`;
     }
   }
 
@@ -411,7 +417,7 @@ function isFileRefusal(answer: string): boolean {
   return (
     !/^\s*#/m.test(answer.slice(0, 200)) &&
     /\b(can(?:no|')t|unable to|not able to|don'?t have the ability)\b/i.test(start) &&
-    /\b(pdf|word|docx?|files?|download)/i.test(start)
+    /\b(pdf|word|docx?|excel|xlsx|spreadsheet|csv|powerpoint|pptx|presentation|slides?|files?|download)/i.test(start)
   );
 }
 

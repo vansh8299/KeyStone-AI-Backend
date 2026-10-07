@@ -13,6 +13,17 @@ let sandboxUnavailable = runningAsRoot;
  * contained; Chrome's own sandbox is an extra layer, used whenever the host allows it.
  */
 export async function launchBrowser() {
+  try {
+    return await launchOnce();
+  } catch (err) {
+    // Rarely, Chrome reports its fresh temporary profile as "already running"; a second try works.
+    if (!/already running/i.test(String((err as Error)?.message))) throw err;
+    log.warn("Chrome's profile was reported busy; launching again");
+    return launchOnce();
+  }
+}
+
+async function launchOnce() {
   const { default: puppeteer } = await import("puppeteer");
   // Containers often give /dev/shm only 64 MB, which crashes Chrome on larger pages.
   const base = ["--disable-dev-shm-usage"];
