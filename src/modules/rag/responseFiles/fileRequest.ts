@@ -5,10 +5,11 @@ import { extractText, parseJsonFromLlm } from "../langchain/llmOutput";
 import { traceConfig } from "../../../lib/langsmith";
 import { limits } from "../../../config/limits";
 import { moduleLogger } from "../../../lib/logger";
+import { FILE_FORMATS, FILE_TYPES, FORMAT_ALIASES, type FileFormat } from "./formats";
+
+export { FILE_FORMATS, fileKind, type FileFormat } from "./formats";
 
 const log = moduleLogger("response-files");
-
-export type FileFormat = "pdf" | "docx";
 
 export interface FileRequest {
   format: FileFormat;
@@ -16,32 +17,51 @@ export interface FileRequest {
   title: string;
 }
 
-export const FILE_FORMAT_LABELS: Record<FileFormat, string> = { pdf: "PDF", docx: "Word document" };
+export const FILE_FORMAT_LABELS = Object.fromEntries(
+  FILE_FORMATS.map((f) => [f, FILE_TYPES[f].label])
+) as Record<FileFormat, string>;
 
-/** Only messages that mention a file format are checked with the model (saves a call on every turn). */
-const MENTIONS_FORMAT = /\b(pdf|docx?|word|ms\s*word)\b/i;
+/**
+ * Only messages that could be asking for a file are checked with the model (saves a call on most
+ * turns): a format is named, or a file/download is asked for.
+ */
+const MAY_ASK_FOR_FILE = new RegExp(
+  [
+    `\\b(${[...FILE_FORMATS, ...Object.keys(FORMAT_ALIASES)].join("|")})\\b`,
+    `\\.(${FILE_FORMATS.join("|")})\\b`,
+    `\\b(download(able)?|export)\\b`,
+    `\\b(give|send|make|create|generate|save|provide|prepare|write|build)\\b.{0,60}\\bfile\\b`,
+  ].join("|"),
+  "i"
+);
 
 const FileRequestSchema = z.object({
   format: z
     .string()
-    .transform((s) => s.toLowerCase().replace(/[^a-z]/g, ""))
-    .transform((s) => (s === "word" || s === "doc" ? "docx" : s))
-    .pipe(z.enum(["pdf", "docx", "none"])),
+    .transform((s) => s.toLowerCase().replace(/^\./, "").replace(/[^a-z+#]/g, ""))
+    .transform((s) => (s === "c++" ? "cpp" : s === "c#" ? "cs" : s))
+    .transform((s) => FORMAT_ALIASES[s] ?? s)
+    .pipe(z.enum([...FILE_FORMATS, "none"])),
   title: z.string().trim().max(120).optional().default(""),
 });
 
 const PROMPT =
   `Decide whether the user's latest message asks the assistant to PRODUCE a downloadable file for ` +
-  `them: create, write, export, convert, give or send something as a PDF or a Word document ` +
-  `(.docx). Examples that ARE requests: "give me this as a PDF", "write a cover letter in Word ` +
-  `format", "export the summary to docx", "can I get a pdf of the table". Asking ABOUT a file ` +
-  `(summarise this PDF, what does the Word doc say, how do I convert PDF to Word) is NOT a request.\n\n` +
+  `them — create, write, export, convert, give or send something as a file — and which kind.\n` +
+  `Kinds (answer with the extension): ${FILE_FORMATS.map((f) => `${f} (${FILE_TYPES[f].label})`).join(", ")}.\n` +
+  `Examples that ARE requests: "give me this as a PDF" → pdf, "write a cover letter in Word" → ` +
+  `docx, "make me a dummy excel file" → xlsx, "export the data as csv" → csv, "make a presentation ` +
+  `on climate change" → pptx, "give me the config as a json file" → json, "write a python script ` +
+  `file for this" → py, "download that as a text file" → txt.\n` +
+  `NOT requests: asking ABOUT a file (summarise this PDF, what does the spreadsheet say), asking how ` +
+  `to convert files, or asking for code/text to read in the chat without a file ("write a python ` +
+  `function", "show me the JSON"). If they want a file in a kind not listed, pick the closest one.\n\n` +
   `Reply with JSON only, no code fences:\n` +
-  `{"format": "pdf" | "docx" | "none", "title": "<a short title for the file, 2-6 words>"}`;
+  `{"format": "<extension>" | "none", "title": "<a short title for the file, 2-6 words>"}`;
 
-/** Whether the user wants this reply as a downloadable PDF or Word file, and its title. */
+/** Whether the user wants this reply as a downloadable file, in which format, and its title. */
 export async function detectFileRequest(question: string): Promise<FileRequest | null> {
-  if (!MENTIONS_FORMAT.test(question)) return null;
+  if (!MAY_ASK_FOR_FILE.test(question)) return null;
   try {
     const response = await getChatModel(limits.fileRequestMaxTokens).invoke(
       [new SystemMessage(PROMPT), new HumanMessage(`User's message: ${question}`)],
