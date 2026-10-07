@@ -7,7 +7,8 @@ import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { getChatModel } from "./chatModel";
 import { traceConfig } from "../../../lib/langsmith";
 import { runStructuredPipeline } from "../loaders/structuredPipeline";
-import { ocrPdfPages, pdfPageCount } from "./pdfOcr";
+import { readPdfPages } from "./pdfOcr";
+import { convertToPdfBuffer } from "../loaders/convertToPdf";
 import { limits, clipText } from "../../../config/limits";
 import { moduleLogger } from "../../../lib/logger";
 
@@ -35,6 +36,8 @@ export interface ReadDocument {
   summary: string;
   pageCount: number | null;
   chunks: { text: string; location: string | null }[];
+  /** For the user: pages that couldn't be read (e.g. the AI provider's rate limit); null if none. */
+  warning: string | null;
 }
 
 const REPLACEMENT_CHAR = String.fromCharCode(0xfffd);
@@ -90,45 +93,23 @@ async function loadDocuments(ext: DocumentExtension, data: Buffer): Promise<Docu
   }
 }
 
-function pageNumberOf(doc: Document): number | undefined {
-  return ((doc.metadata as Record<string, unknown>).loc as { pageNumber?: number } | undefined)?.pageNumber;
+/** A .docx keeps its pictures under word/media/; zip entry names are stored uncompressed. */
+function docxHasImages(data: Buffer): boolean {
+  return data.includes("word/media/");
 }
 
-async function addOcrText(pdf: Buffer, pages: Document[]): Promise<{ docs: Document[]; ocrNote: string }> {
-  const byPage = new Map(pages.map((d) => [pageNumberOf(d), d]));
-  const total =
-    ((pages[0]?.metadata as { pdf?: { totalPages?: number } } | undefined)?.pdf?.totalPages ?? 0) ||
-    (await pdfPageCount(pdf));
-
-  const scanned: number[] = [];
-  for (let n = 1; n <= total; n++) {
-    const text = byPage.get(n)?.pageContent.replace(/\s/g, "") ?? "";
-    if (text.length < limits.pdfOcrMinTextChars) scanned.push(n);
+/**
+ * Word files with pictures are rendered to PDF so their images can be read like a PDF's; without
+ * pictures (or if rendering fails) only their text is read.
+ */
+async function docxAsPdf(data: Buffer): Promise<Buffer | null> {
+  if (!docxHasImages(data)) return null;
+  try {
+    return await convertToPdfBuffer(data, "file.docx");
+  } catch (err) {
+    log.warn({ err }, "rendering a .docx with images to PDF failed; reading its text only");
+    return null;
   }
-  if (scanned.length === 0) return { docs: pages, ocrNote: "" };
-
-  const toRead = scanned.slice(0, limits.pdfOcrMaxPages);
-  const ocrText = await ocrPdfPages(pdf, toRead);
-
-  const docs: Document[] = [];
-  for (let n = 1; n <= total; n++) {
-    const ocr = ocrText.get(n);
-    if (ocr) docs.push(new Document({ pageContent: ocr, metadata: { loc: { pageNumber: n }, ocr: true } }));
-    else if (byPage.get(n)) docs.push(byPage.get(n)!);
-  }
-
-  const skipped = scanned.length - toRead.length;
-  const ocrNote =
-    ocrText.size === 0
-      ? ""
-      : `(${
-          ocrText.size === total
-            ? "This is a scanned PDF; its text"
-            : `${ocrText.size} of its ${total} pages are scanned; their text`
-        } was read with OCR, so small errors are possible.` +
-        (skipped > 0 ? ` Only the first ${toRead.length} scanned pages were read; ${skipped} more were skipped.` : "") +
-        ")";
-  return { docs, ocrNote };
 }
 
 const summaryChain = () =>
@@ -148,9 +129,10 @@ const summaryChain = () =>
     .pipe(new StringOutputParser());
 
 export async function readDocument(filename: string, ext: DocumentExtension, data: Buffer): Promise<ReadDocument> {
+  const pdf = ext === "pdf" ? data : ext === "docx" ? await docxAsPdf(data) : null;
   let docs: Document[];
   try {
-    docs = await loadDocuments(ext, data);
+    docs = await loadDocuments(pdf ? "pdf" : ext, pdf ?? data);
   } catch (err) {
     log.error({ err, ext }, "reading a document failed");
     throw new DocumentReadError(
@@ -160,10 +142,12 @@ export async function readDocument(filename: string, ext: DocumentExtension, dat
     );
   }
   let ocrNote = "";
-  if (ext === "pdf") ({ docs, ocrNote } = await addOcrText(data, docs));
+  let warning: string | null = null;
+  if (pdf) ({ docs, note: ocrNote, warning } = await readPdfPages(pdf, docs));
 
   docs = docs.filter((d) => d.pageContent.trim());
   if (docs.length === 0) {
+    if (warning) throw new DocumentReadError(`Nothing could be read from this file. ${warning}`);
     throw new DocumentReadError(
       ext === "pdf" ? "No readable text was found in this PDF, even with OCR." : "This file is empty."
     );
@@ -211,5 +195,5 @@ export async function readDocument(filename: string, ext: DocumentExtension, dat
     traceConfig("document_summary", { filename }, ["attachment"])
   );
 
-  return { text, truncated, summary: [summary.trim(), ocrNote].filter(Boolean).join("\n\n"), pageCount, chunks };
+  return { text, truncated, summary: [summary.trim(), ocrNote].filter(Boolean).join("\n\n"), pageCount, chunks, warning };
 }

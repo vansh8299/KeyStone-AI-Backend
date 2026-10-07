@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { limits } from "../../config/limits";
-import { boundedText, idSchema, optionalUrlSchema, singleLineText } from "../../shared/validate";
+import { boundedText, idSchema, optionalUrlSchema, singleLineText, urlSchema } from "../../shared/validate";
+
+export const IngestUrlArgsSchema = z.object({ url: urlSchema });
 
 export const AskAgentArgsSchema = z
   .object({

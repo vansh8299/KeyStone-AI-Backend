@@ -19,6 +19,7 @@ import {
   SearchDocumentsArgsSchema,
   IngestFileArgsSchema,
   IngestTextArgsSchema,
+  IngestUrlArgsSchema,
   DeleteIngestedDocumentArgsSchema,
 } from "./rag.schemas";
 
@@ -91,6 +92,13 @@ export async function createRagController() {
         await ingestLimiter.consume(`user:${userId}`);
         const { input } = parseInput(IngestTextArgsSchema, args);
         return ingestService.ingestText({ ...input, userId });
+      },
+
+      ingestUrl: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
+        const userId = requireAuth(ctx);
+        await ingestLimiter.consume(`user:${userId}`);
+        const { url } = parseInput(IngestUrlArgsSchema, args);
+        return ingestService.ingestUrl({ userId, url });
       },
 
       deleteIngestedDocument: (_: unknown, args: unknown, ctx: GraphQLContext) => {

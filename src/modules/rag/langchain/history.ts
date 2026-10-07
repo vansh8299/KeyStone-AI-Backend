@@ -47,6 +47,12 @@ export function withMemoryContext(
       `name, use this one — a different name in your memory of past conversations was someone ` +
       `else, or mentioned in passing, not the user.`;
   }
+  if (attachedDocuments || attachedImages) {
+    prompt +=
+      `\n\nLinks the user shares to documents, files or web pages are opened for you, and their ` +
+      `content is attached below (marked "the content of the link …"). Use that content to answer, ` +
+      `and never say you can't open, access or view a link that is attached this way.`;
+  }
   if (attachedDocuments) {
     prompt +=
       `\n\nThe user attached document(s) in this conversation; their content is below (long ` +

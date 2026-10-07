@@ -80,12 +80,12 @@ async function runPipeline(job: ClaimedJob, buffer: Buffer) {
     title: job.filename,
     sourceUrl: job.sourceUrl ?? undefined,
   };
-  const chunks =
+  const { chunks, warning } =
     category === "structured"
-      ? await runStructuredPipeline(buffer, job.filename, baseMetadata)
+      ? { chunks: await runStructuredPipeline(buffer, job.filename, baseMetadata), warning: null }
       : await runPdfPipeline(category === "pdf" ? buffer : await convertToPdfBuffer(buffer, job.filename), baseMetadata);
   await addDocumentsToStore(chunks);
-  return { chunkCount: chunks.length, pipeline: category };
+  return { chunkCount: chunks.length, pipeline: category, warning };
 }
 
 async function processJob(job: ClaimedJob): Promise<void> {
@@ -102,12 +102,12 @@ async function processJob(job: ClaimedJob): Promise<void> {
 
     // A previous attempt may have stored some chunks before failing: start clean.
     await deleteDocumentsByDocumentId(job.documentId);
-    const { chunkCount, pipeline } = await runPipeline(job, Buffer.from(payload.data));
+    const { chunkCount, pipeline, warning } = await runPipeline(job, Buffer.from(payload.data));
 
     const [updated] = await prisma.$transaction([
       prisma.document.updateMany({
         where: { id: job.documentId },
-        data: { status: "READY", error: null, chunkCount, pipeline, mongoDocId: job.documentId },
+        data: { status: "READY", error: null, warning, chunkCount, pipeline, mongoDocId: job.documentId },
       }),
       prisma.ingestionJob.deleteMany({ where: { id: job.id } }),
     ]);

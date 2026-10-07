@@ -56,6 +56,13 @@ export const idSchema = z
 
 export const IdArgsSchema = z.object({ id: idSchema });
 
+export const urlSchema = z
+  .string()
+  .trim()
+  .max(2048, "must be at most 2048 characters")
+  .url("must be a valid URL")
+  .refine((v) => /^https?:\/\//i.test(v), "must be an http or https link");
+
 export const optionalUrlSchema = z.preprocess(
   (v) => (v === null || (typeof v === "string" && v.trim() === "") ? undefined : v),
   z.string().trim().max(2048, "must be at most 2048 characters").url("must be a valid URL").optional()

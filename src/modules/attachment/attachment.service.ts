@@ -12,6 +12,8 @@ import {
 } from "../rag/langchain/documentReader";
 import { getEmbeddingProvider } from "../rag/embeddings";
 import { runInBackground } from "../../lib/backgroundTasks";
+import { fetchLink } from "../rag/loaders/linkFetcher";
+import { toLinkClientError } from "../rag/loaders/linkErrors";
 
 export type AttachmentKind = "image" | "document";
 
@@ -23,6 +25,13 @@ export interface MessageAttachment {
   parsedText?: string;
   summary?: string | null;
   pageCount?: number | null;
+  /** The link the user shared that this was read from; absent for uploaded files. */
+  sourceUrl?: string | null;
+}
+
+/** How an attachment is named to the model: from a link, it's that link's content. */
+function fromLinkNote(sourceUrl?: string | null): string {
+  return sourceUrl ? ` — the content of the link ${sourceUrl} that the user shared (already opened for you)` : "";
 }
 
 const isDocument = (a: Pick<MessageAttachment, "kind">) => a.kind === "document";
@@ -95,7 +104,7 @@ const RETURNED_FIELDS = {
 } as const;
 
 export const attachmentService = {
-  async upload({ userId, filename, data }: { userId: string; filename: string; data: Buffer }) {
+  async upload({ userId, filename, data, sourceUrl }: { userId: string; filename: string; data: Buffer; sourceUrl?: string }) {
     if (data.length === 0) throw badUserInputError("The file is empty.");
     const imageType = detectImageType(data);
     const upload = imageType
@@ -103,9 +112,9 @@ export const attachmentService = {
       : await this.readDocumentFile(filename, data);
     runInBackground("unsent attachment cleanup", deleteStaleUploads);
 
-    const { chunks, ...fields } = upload;
+    const { chunks, warning, ...fields } = upload;
     const created = await prisma.attachment.create({
-      data: { userId, size: data.length, data, ...fields },
+      data: { userId, size: data.length, data, sourceUrl, ...fields },
       select: { ...RETURNED_FIELDS, parsedText: true },
     });
     if (chunks.length > 0) {
@@ -113,7 +122,15 @@ export const attachmentService = {
         data: chunks.map((c, index) => ({ attachmentId: created.id, index, ...c })),
       });
     }
-    return { ...created, parsedText: created.kind === "image" ? created.parsedText : null };
+    return { ...created, parsedText: created.kind === "image" ? created.parsedText : null, warning };
+  },
+
+  /** Downloads a public link (a document, Google Doc, image or web page) and attaches it like an upload. */
+  async attachLink({ userId, url }: { userId: string; url: string }) {
+    const link = await fetchLink(url, Math.max(limits.chatDocumentMaxBytes, limits.chatImageMaxBytes)).catch((err) => {
+      throw toLinkClientError(err);
+    });
+    return this.upload({ userId, filename: link.filename, data: link.data, sourceUrl: url });
   },
 
   async readImage(filename: string, data: Buffer, mimeType: string) {
@@ -133,6 +150,7 @@ export const attachmentService = {
       summary: null,
       pageCount: null,
       chunks: [] as { text: string; location: string | null; embedding: number[] }[],
+      warning: null as string | null,
     };
   },
 
@@ -163,6 +181,7 @@ export const attachmentService = {
       summary: read.truncated ? `${read.summary}\n\n(Only the first part of this very long document was read.)` : read.summary,
       pageCount: read.pageCount,
       chunks: read.chunks.map((c, i) => ({ ...c, embedding: vectors[i] ?? [] })),
+      warning: read.warning,
     };
   },
 
@@ -178,16 +197,17 @@ export const attachmentService = {
         userId,
         OR: [{ conversationId: null }, ...(conversationId ? [{ conversationId }] : [])],
       },
-      select: { id: true, kind: true, filename: true, mimeType: true, parsedText: true, summary: true, pageCount: true },
+      select: { id: true, kind: true, filename: true, mimeType: true, parsedText: true, summary: true, pageCount: true, sourceUrl: true },
     });
     if (found.length !== unique.length) {
       throw notFoundError("An attached file is no longer available. Please attach it again.");
     }
     return unique.map((id) => {
       const a = found.find((f) => f.id === id)!;
+      const link = a.sourceUrl ? { sourceUrl: a.sourceUrl } : {};
       return a.kind === "document"
-        ? { id: a.id, kind: "document", filename: a.filename, mimeType: a.mimeType, summary: a.summary, pageCount: a.pageCount }
-        : { id: a.id, kind: "image", filename: a.filename, mimeType: a.mimeType, parsedText: a.parsedText };
+        ? { id: a.id, kind: "document", filename: a.filename, mimeType: a.mimeType, summary: a.summary, pageCount: a.pageCount, ...link }
+        : { id: a.id, kind: "image", filename: a.filename, mimeType: a.mimeType, parsedText: a.parsedText, ...link };
     });
   },
 
@@ -208,7 +228,7 @@ export const attachmentService = {
     if (ids.length === 0) return none;
     const docs = await prisma.attachment.findMany({
       where: { id: { in: ids }, kind: "document" },
-      select: { id: true, filename: true, parsedText: true, summary: true, pageCount: true, _count: { select: { chunks: true } } },
+      select: { id: true, filename: true, parsedText: true, summary: true, pageCount: true, sourceUrl: true, _count: { select: { chunks: true } } },
     });
     const ordered = ids.map((id) => docs.find((d) => d.id === id)).filter((d): d is (typeof docs)[number] => !!d);
     if (ordered.length === 0) return none;
@@ -216,7 +236,7 @@ export const attachmentService = {
     const describe = (d: (typeof ordered)[number], i: number) => {
       const unit = /\.(xlsx|xls|csv)$/i.test(d.filename) ? "sheet" : "page";
       const size = d.pageCount ? ` (${d.pageCount} ${unit}${d.pageCount === 1 ? "" : "s"})` : "";
-      return `Document ${i + 1}: "${d.filename}"${size}`;
+      return `Document ${i + 1}: "${d.filename}"${size}${fromLinkNote(d.sourceUrl)}`;
     };
     const overview = ordered.map((d, i) => `${describe(d, i)}\nSummary: ${d.summary ?? "(none)"}`).join("\n\n");
 
@@ -273,7 +293,7 @@ export const attachmentService = {
 export function formatImagesForPrompt(attachments: MessageAttachment[]): string {
   return attachments
     .filter((a) => !isDocument(a))
-    .map((a, i) => `Image ${i + 1} ("${a.filename}"):\n${a.parsedText ?? ""}`)
+    .map((a, i) => `Image ${i + 1} ("${a.filename}"${fromLinkNote(a.sourceUrl)}):\n${a.parsedText ?? ""}`)
     .join("\n\n");
 }
 
@@ -283,7 +303,7 @@ export function messageTextWithAttachments(content: string, metadata: unknown): 
   const images = formatImagesForPrompt(attachments);
   const documents = attachments
     .filter(isDocument)
-    .map((a) => `Document "${a.filename}": ${a.summary ?? ""}`)
+    .map((a) => `Document "${a.filename}"${fromLinkNote(a.sourceUrl)}: ${a.summary ?? ""}`)
     .join("\n\n");
   return [content, images && `[Attached images]\n${images}`, documents && `[Attached documents]\n${documents}`]
     .filter(Boolean)

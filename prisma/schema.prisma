@@ -114,6 +114,8 @@ model Document {
   status      DocumentStatus @default(READY)
   /// Why ingestion failed (safe to show the user); set when status is FAILED.
   error       String?
+  /// READY, but parts couldn't be read (e.g. scanned pages hit the AI provider's rate limit); safe to show.
+  warning     String?
   chunkCount  Int?
   /// Which loader produced the chunks: "pdf", "convertible" (converted to PDF) or "structured".
   pipeline    String?
@@ -166,6 +168,8 @@ model Attachment {
   parsedText     String            @db.Text
   summary        String?           @db.Text
   pageCount      Int?
+  /// The link it was read from (attachLink); null for uploaded files.
+  sourceUrl      String?
   chunks         AttachmentChunk[]
   createdAt      DateTime          @default(now())
 

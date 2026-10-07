@@ -19,6 +19,8 @@ export const documentTypeDefs = gql`
     status: DocumentStatus!
     "Why ingestion failed, when status is FAILED (safe to show). Uploading the file again retries."
     error: String
+    "READY, but some pages (scans or images) couldn't be read, and why (e.g. the AI provider's rate limit). Uploading again retries."
+    warning: String
     "Chunks stored for search, once READY."
     chunkCount: Int
     "Which loader processed it: pdf, convertible (converted to PDF first) or structured."
