@@ -7,6 +7,8 @@ import { detectFileCategory } from "./loaders/fileType";
 import { deleteDocumentsByDocumentId } from "./langchain/vectorStore";
 import { notifyJobQueued } from "./ingestionQueue";
 import { moduleLogger } from "../../lib/logger";
+import { fetchLink } from "./loaders/linkFetcher";
+import { toLinkClientError } from "./loaders/linkErrors";
 
 const log = moduleLogger("ingestion");
 
@@ -102,6 +104,14 @@ export const ingestService = {
       buffer: Buffer.from(input.content, "utf-8"),
       sourceUrl: input.sourceUrl,
     });
+  },
+
+  /** Downloads a public link (document, Google Doc/Sheet/Slides, Drive file or web page) into the knowledge base. */
+  async ingestUrl(input: { userId: string; url: string }) {
+    const link = await fetchLink(input.url, limits.ingestFileMaxBytes).catch((err) => {
+      throw toLinkClientError(err);
+    });
+    return this.ingestFile({ userId: input.userId, filename: link.filename, buffer: link.data, sourceUrl: input.url });
   },
 
   async deleteIngested(documentId: string, userId: string) {

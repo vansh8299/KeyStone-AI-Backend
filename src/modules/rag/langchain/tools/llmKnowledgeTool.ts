@@ -1,7 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
-import { getChatModel } from "../chatModel";
+import { getAnswerModel } from "../chatModel";
 import { toLangChainMessages, withMemoryContext } from "../history";
 import { extractText } from "../llmOutput";
 
@@ -11,8 +11,8 @@ export const CANNOT_ANSWER_MARKER = "NEEDS_WEB_SEARCH";
 
 export function createLlmKnowledgeTool() {
   return tool(
-    async ({ question, history, userName, conversationSummary, pastConversations, attachedImages, attachedDocuments }): Promise<string> => {
-      const response = await getChatModel().invoke([
+    async ({ question, history, userName, outputFile, conversationSummary, pastConversations, attachedImages, attachedDocuments }): Promise<string> => {
+      const response = await getAnswerModel(outputFile).invoke([
         new SystemMessage(
           withMemoryContext(
             `Answer the question from your own general knowledge if you can do so confidently and ` +
@@ -37,7 +37,7 @@ export function createLlmKnowledgeTool() {
               `time-sensitive), or you're genuinely not confident in the answer, respond with EXACTLY ` +
               `the single word "${CANNOT_ANSWER_MARKER}" and nothing else — do not guess and do not ` +
               `add any other text alongside that word.`,
-            { userName, conversationSummary, pastConversations, attachedImages, attachedDocuments }
+            { userName, outputFile, conversationSummary, pastConversations, attachedImages, attachedDocuments }
           )
         ),
         ...toLangChainMessages(history ?? []),
@@ -56,6 +56,10 @@ export function createLlmKnowledgeTool() {
           .optional()
           .describe("Previous messages in the conversation, oldest first"),
         userName: z.string().optional().describe("The signed-in user's name, from their account"),
+        outputFile: z
+          .enum(["pdf", "docx", ""])
+          .optional()
+          .describe("The user asked for the reply as a downloadable file in this format"),
         conversationSummary: z
           .string()
           .optional()

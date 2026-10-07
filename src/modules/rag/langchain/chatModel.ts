@@ -62,6 +62,11 @@ export function getChatModel(maxTokens: number = limits.answerMaxTokens): ChatMo
   return cached(CHAT_MODELS[env.llmProvider](), maxTokens);
 }
 
+/** The model that writes the answer: longer output when the reply becomes a PDF or Word file. */
+export function getAnswerModel(outputFile?: string): ChatModel {
+  return getChatModel(outputFile ? limits.documentAnswerMaxTokens : limits.answerMaxTokens);
+}
+
 const VISION_MODELS = {
   openai: () => env.openaiChatModel,
   gemini: () => env.geminiChatModel,

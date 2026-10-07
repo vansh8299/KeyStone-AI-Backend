@@ -80,12 +80,12 @@ async function runPipeline(job: ClaimedJob, buffer: Buffer) {
     title: job.filename,
     sourceUrl: job.sourceUrl ?? undefined,
   };
-  const chunks =
+  const { chunks, warning } =
     category === "structured"
-      ? await runStructuredPipeline(buffer, job.filename, baseMetadata)
+      ? { chunks: await runStructuredPipeline(buffer, job.filename, baseMetadata), warning: null }
       : await runPdfPipeline(category === "pdf" ? buffer : await convertToPdfBuffer(buffer, job.filename), baseMetadata);
   await addDocumentsToStore(chunks);
-  return { chunkCount: chunks.length, pipeline: category };
+  return { chunkCount: chunks.length, pipeline: category, warning };
 }
 
 async function processJob(job: ClaimedJob): Promise<void> {
@@ -102,12 +102,12 @@ async function processJob(job: ClaimedJob): Promise<void> {
 
     // A previous attempt may have stored some chunks before failing: start clean.
     await deleteDocumentsByDocumentId(job.documentId);
-    const { chunkCount, pipeline } = await runPipeline(job, Buffer.from(payload.data));
+    const { chunkCount, pipeline, warning } = await runPipeline(job, Buffer.from(payload.data));
 
     const [updated] = await prisma.$transaction([
       prisma.document.updateMany({
         where: { id: job.documentId },
-        data: { status: "READY", error: null, chunkCount, pipeline, mongoDocId: job.documentId },
+        data: { status: "READY", error: null, warning, chunkCount, pipeline, mongoDocId: job.documentId },
       }),
       prisma.ingestionJob.deleteMany({ where: { id: job.id } }),
     ]);
@@ -171,13 +171,40 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+/**
+ * The database dropped or refused the connection (P1017 closed, P1001 unreachable, P1002 timed out).
+ * Expected with serverless Postgres such as Neon, which closes connections while it sleeps.
+ */
+function isConnectionDrop(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "P1017" || code === "P1001" || code === "P1002";
+}
+
+/** Claims a job, retrying once at once when the connection was dropped (Prisma reconnects). */
+async function claimWithReconnect(): Promise<ClaimedJob | null> {
+  try {
+    return await claimNextJob();
+  } catch (err) {
+    if (!isConnectionDrop(err)) throw err;
+    log.debug({ code: (err as { code?: string }).code }, "database connection was closed; reconnecting");
+    return claimNextJob();
+  }
+}
+
 async function workerLoop() {
+  let connectionFailures = 0;
   while (running) {
     let job: ClaimedJob | null;
     try {
-      job = await claimNextJob();
+      job = await claimWithReconnect();
+      connectionFailures = 0;
     } catch (err) {
-      log.error({ err }, "claiming an ingestion job failed");
+      if (isConnectionDrop(err) && ++connectionFailures < limits.ingestionConnectionErrorsBeforeAlert) {
+        // Usually the database waking from sleep: say so quietly and try again shortly.
+        log.warn({ code: (err as { code?: string }).code, attempt: connectionFailures }, "database unreachable; retrying");
+      } else {
+        log.error({ err }, "claiming an ingestion job failed");
+      }
       await sleep(limits.ingestionErrorBackoffMs);
       continue;
     }

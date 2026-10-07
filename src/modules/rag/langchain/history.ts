@@ -30,6 +30,8 @@ export function formatHistoryTranscript(history: ChatHistoryMessage[]): string {
 export interface MemoryContext {
   /** The signed-in user's name from their account. */
   userName?: string;
+  /** The user asked for this reply as a downloadable file in this format. */
+  outputFile?: "pdf" | "docx" | "";
   conversationSummary?: string;
   pastConversations?: string;
   attachedImages?: string;
@@ -38,14 +40,33 @@ export interface MemoryContext {
 
 export function withMemoryContext(
   systemPrompt: string,
-  { userName, conversationSummary, pastConversations, attachedImages, attachedDocuments }: MemoryContext
+  { userName, outputFile, conversationSummary, pastConversations, attachedImages, attachedDocuments }: MemoryContext
 ): string {
   let prompt = systemPrompt;
+  if (outputFile) {
+    const label = outputFile === "pdf" ? "PDF" : "Word document";
+    prompt +=
+      `\n\nThe user asked for this as a ${label}. Your reply is turned into that file automatically ` +
+      `and offered to them as a download, so write the complete document itself in Markdown: a ` +
+      `title as a "#" heading, then the content with "##" sections, lists and tables as needed. If ` +
+      `they refer to something already in the conversation ("this", "that", "the above", "your ` +
+      `last answer"), the file must contain THAT content: reproduce your earlier answer faithfully ` +
+      `(same items, same order, same facts), completing it if it was cut off — don't write new or ` +
+      `different content. The same goes for attached or remembered content they ask for as a file. ` +
+      `Never say you can't create, attach or send files, and don't add ` +
+      `chat around the document (no "Here is your ${label}").`;
+  }
   if (userName) {
     prompt +=
       `\n\nThe signed-in user's name, from their account, is "${userName}". If you address them by ` +
       `name, use this one — a different name in your memory of past conversations was someone ` +
       `else, or mentioned in passing, not the user.`;
+  }
+  if (attachedDocuments || attachedImages) {
+    prompt +=
+      `\n\nLinks the user shares to documents, files or web pages are opened for you, and their ` +
+      `content is attached below (marked "the content of the link …"). Use that content to answer, ` +
+      `and never say you can't open, access or view a link that is attached this way.`;
   }
   if (attachedDocuments) {
     prompt +=

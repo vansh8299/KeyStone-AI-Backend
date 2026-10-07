@@ -25,6 +25,7 @@ import { closeMongo, getMongoDb } from "./lib/mongo";
 import { closeRedis, getRedis } from "./lib/redis";
 import { drainBackground } from "./lib/backgroundTasks";
 import { startIngestionWorker, stopIngestionWorker } from "./modules/rag/ingestionQueue";
+import { startKeepAwake, stopKeepAwake } from "./lib/keepAwake";
 import { validate as graphqlValidate, specifiedRules } from "graphql";
 import { queryLimitsRule } from "./graphql/queryLimits";
 import { operationLogPlugin } from "./graphql/operationLog";
@@ -199,6 +200,7 @@ async function main() {
 
   await new Promise<void>((resolve) => httpServer.listen({ port: env.port }, resolve));
   if (env.ingestionWorker) await startIngestionWorker(env.ingestionConcurrency);
+  startKeepAwake(env.keepAwakeUrls, env.keepAwakeIntervalMs);
   log.info(
     {
       port: env.port,
@@ -235,6 +237,7 @@ async function shutdown(signal: string) {
   log.info({ signal }, "shutting down: finishing in-progress work");
   setTimeout(() => process.exit(1), env.shutdownGraceMs + 15_000).unref(); // last resort
 
+  stopKeepAwake();
   await stopIngestionWorker(); // take no new jobs; the ones in progress are drained below
   const unfinished = await drainBackground(env.shutdownGraceMs);
   if (unfinished > 0) log.warn({ unfinished }, "shutting down with background work still running");

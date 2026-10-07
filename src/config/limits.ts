@@ -54,6 +54,22 @@ export const limits = {
   pdfOcrMaxPages: 20,
   pdfOcrConcurrency: 3,
   pdfOcrRenderWidth: 1600,
+  /** Embedded images with a side at or below this many pixels are decoration (icons, logos, rules). */
+  pdfImageMinPx: 120,
+  /** Knowledge-base ingestion runs in the background, so it may read more pages with the vision model. */
+  ingestPdfVisionMaxPages: 100,
+  /** On a rate limit (429) the pages of a file pause for the provider's suggested delay, then retry. */
+  pdfRateLimitMaxRetries: 4,
+  pdfRateLimitDefaultWaitMs: 30_000, // when the provider doesn't say how long
+  /** Total pausing allowed per file: chat uploads are waited on by the user; ingestion runs in the background. */
+  pdfRateLimitWaitBudgetMs: 90_000,
+  ingestPdfRateLimitWaitBudgetMs: 10 * 60_000,
+
+  // Reading documents from links (linkFetcher.ts).
+  linkFetchTimeoutMs: 30_000,
+  linkMaxRedirects: 5,
+  /** A web page with less readable text than this is treated as needing JavaScript. */
+  linkPageMinTextChars: 200,
 
   // External calls: fail in bounded time instead of hanging a reply. LangChain retries 6 times
   // with backoff by default, which turned a quota error into a minute of waiting.
@@ -67,12 +83,17 @@ export const limits = {
   ingestionLeaseMs: 5 * 60_000, // renewed every third of this while a worker is on the job
   ingestionIdlePollMs: env.ingestionIdlePollMs,
   ingestionErrorBackoffMs: 15_000,
+  /** Dropped database connections in a row (e.g. a sleeping serverless database) before it's logged as an error. */
+  ingestionConnectionErrorsBeforeAlert: 4,
 
   guardrailMaxRevisions: 2,
   guardrailAnswerMaxChars: 8_000,
 
   answerMaxTokens: env.llmMaxOutputTokens,
+  /** Replies that become a PDF or Word file are whole documents, so they may run much longer. */
+  documentAnswerMaxTokens: Math.max(env.llmMaxOutputTokens, 8_192),
   classifyMaxTokens: 10,
+  fileRequestMaxTokens: 60,
   ambiguityCheckMaxTokens: 300,
   rewriteMaxTokens: 200,
   titleMaxTokens: 30,

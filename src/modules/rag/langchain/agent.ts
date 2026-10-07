@@ -9,7 +9,7 @@ import {
   withMemoryContext,
 } from "./history";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import { getChatModel } from "./chatModel";
+import { getAnswerModel, getChatModel } from "./chatModel";
 import { traceConfig, type TraceContext } from "../../../lib/langsmith";
 import { createWebSearchTool, WEB_SEARCH_TOOL_NAME } from "./tools/webSearchTool";
 import {
@@ -111,6 +111,10 @@ const GraphState = Annotation.Root({
     default: () => "",
     reducer: (_prev, next) => next,
   }),
+  outputFile: Annotation<"pdf" | "docx" | "">({
+    default: () => "",
+    reducer: (_prev, next) => next,
+  }),
   userName: Annotation<string>({
     default: () => "",
     reducer: (_prev, next) => next,
@@ -177,6 +181,7 @@ type GraphStateType = typeof GraphState.State;
 function memoryContext(state: GraphStateType) {
   return {
     userName: state.userName,
+    outputFile: state.outputFile,
     conversationSummary: state.conversationSummary,
     pastConversations: state.pastConversations,
     attachedImages: state.attachedImages,
@@ -325,7 +330,7 @@ async function listKnowledgeBase(state: GraphStateType) {
 }
 
 async function directAnswer(state: GraphStateType) {
-  const llm = getChatModel();
+  const llm = getAnswerModel(state.outputFile);
   const response = await llm.invoke([
     new SystemMessage(
       withMemoryContext(
@@ -358,7 +363,7 @@ function routeAfterKbSearch(state: GraphStateType): "answerFromKb" | "tryOwnKnow
 }
 
 async function answerFromKb(state: GraphStateType) {
-  const llm = getChatModel();
+  const llm = getAnswerModel(state.outputFile);
   const context = clipText(
     state.kbChunks.map((c, i) => `[${i + 1}] (source: ${c.title})\n${c.text}`).join("\n\n---\n\n"),
     limits.kbContextMaxChars
@@ -441,7 +446,7 @@ async function webSearch(state: GraphStateType) {
     limits.webResultsMaxChars
   );
 
-  const llm = getChatModel();
+  const llm = getAnswerModel(state.outputFile);
   const response = await llm.invoke([
     new SystemMessage(
       withMemoryContext(
@@ -616,7 +621,7 @@ function createTokenForwarder(onToken: TokenHandler, onSwitch?: () => void) {
   };
 }
 
-export type AgentStatus = "CHECKING_ANSWER" | "IMPROVING_ANSWER";
+export type AgentStatus = "CHECKING_ANSWER" | "IMPROVING_ANSWER" | "CREATING_FILE";
 export type StatusHandler = (status: AgentStatus) => void;
 
 /** Live updates while the agent answers. onReset: discard the text streamed so far. */
@@ -732,6 +737,8 @@ export async function askAgent(
   memory: {
     userId: string;
     userName?: string;
+    /** The user asked for the reply as a downloadable file in this format. */
+    outputFile?: "pdf" | "docx";
     history: ChatHistoryMessage[];
     summary: string;
     pastConversations?: string;
@@ -752,6 +759,7 @@ export async function askAgent(
       conversationSummary: memory.summary,
       pastConversations: memory.pastConversations ?? "",
       userName: memory.userName ?? "",
+      outputFile: memory.outputFile ?? "",
       attachedImages: memory.attachedImages ?? "",
       attachedDocuments: memory.attachedDocuments ?? "",
       documentOverview: memory.documentOverview ?? "",

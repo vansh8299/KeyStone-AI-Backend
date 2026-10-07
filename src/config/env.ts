@@ -33,6 +33,10 @@ const EnvSchema = z.object({
   INGESTION_WORKER: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["true", "false"]).default("true")),
   INGESTION_CONCURRENCY: numberWithDefault(2).pipe(z.number().int().min(1).max(16)),
   INGESTION_IDLE_POLL_MS: numberWithDefault(300_000).pipe(z.number().int().min(1_000)),
+  // Keep free Render services awake: ping these URLs (comma-separated) every KEEP_AWAKE_INTERVAL_MS.
+  // Defaults to this service's own /health on Render (RENDER_EXTERNAL_URL is set there); off locally.
+  KEEP_AWAKE_URLS: optionalString,
+  KEEP_AWAKE_INTERVAL_MS: numberWithDefault(600_000).pipe(z.number().int().min(0)),
   MONGODB_URI: z.string().min(1),
   MONGODB_DB_NAME: withDefault("rag_chat"),
   MONGODB_COLLECTION: withDefault("document_chunks"),
@@ -184,6 +188,12 @@ export const env = {
   ingestionConcurrency: e.INGESTION_CONCURRENCY,
   /** How often idle workers look for jobs they weren't woken for (e.g. a crashed worker's). */
   ingestionIdlePollMs: e.INGESTION_IDLE_POLL_MS,
+  /** URLs to request every keepAwakeIntervalMs so free Render services don't spin down; empty = off. */
+  keepAwakeUrls: (e.KEEP_AWAKE_URLS ?? (process.env.RENDER_EXTERNAL_URL ? `${process.env.RENDER_EXTERNAL_URL}/health` : ""))
+    .split(",")
+    .map((u) => u.trim())
+    .filter((u) => /^https?:\/\//i.test(u)),
+  keepAwakeIntervalMs: e.KEEP_AWAKE_INTERVAL_MS,
   mongodbUri: e.MONGODB_URI,
   mongodbDbName: e.MONGODB_DB_NAME,
   mongodbCollection: e.MONGODB_COLLECTION,

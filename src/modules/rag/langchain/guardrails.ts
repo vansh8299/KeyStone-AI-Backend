@@ -1,5 +1,5 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import { getChatModel } from "./chatModel";
+import { getAnswerModel, getChatModel } from "./chatModel";
 import { ChatHistoryMessage, MemoryContext, formatHistoryTranscript, toLangChainMessages, withMemoryContext } from "./history";
 import { extractText, GuardrailVerdict, GuardrailVerdictSchema, NonEmptyTextSchema, parseJsonFromLlm } from "./llmOutput";
 import { limits, clipText } from "../../../config/limits";
@@ -73,7 +73,7 @@ export async function reviewAnswer(draft: AnswerDraft): Promise<GuardrailVerdict
 }
 
 export async function reviseAnswer(draft: AnswerDraft, verdict: GuardrailVerdict): Promise<string | null> {
-  const response = await getChatModel().invoke([
+  const response = await getAnswerModel(draft.memory.outputFile).invoke([
     new SystemMessage(
       withMemoryContext(
         `A reviewer rejected your drafted reply to the user's latest message. Write a corrected ` +

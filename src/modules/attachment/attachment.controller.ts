@@ -4,6 +4,8 @@ import { createRateLimiter } from "../../shared/rateLimit";
 import { limits } from "../../config/limits";
 import { attachmentService } from "./attachment.service";
 import { checkUploadFilename, readUploadLimited, type UploadPayload } from "../../shared/upload";
+import { parseInput } from "../../shared/validate";
+import { LinkArgsSchema } from "./attachment.schemas";
 
 
 const uploadLimiter = createRateLimiter({
@@ -26,6 +28,13 @@ export const attachmentController = {
         Math.max(limits.chatDocumentMaxBytes, limits.chatImageMaxBytes)
       );
       return attachmentService.upload({ userId, filename, data });
+    },
+
+    attachLink: async (_: unknown, args: unknown, ctx: GraphQLContext) => {
+      const userId = requireAuth(ctx);
+      await uploadLimiter.consume(`user:${userId}`);
+      const { url } = parseInput(LinkArgsSchema, args);
+      return attachmentService.attachLink({ userId, url });
     },
   },
 };

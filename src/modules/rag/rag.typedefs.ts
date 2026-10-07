@@ -31,6 +31,17 @@ export const ragTypeDefs = gql`
     userMessageId: ID!
     "The saved assistant reply."
     assistantMessageId: ID!
+    "PDF or Word files made for this reply, when the user asked for one. Download: GET /attachments/:id."
+    files: [ResponseFile!]!
+  }
+
+  type ResponseFile {
+    id: ID!
+    filename: String!
+    mimeType: String!
+    size: Int!
+    "pdf or docx"
+    format: String!
   }
 
   enum AgentStreamEventType {
@@ -51,6 +62,8 @@ export const ragTypeDefs = gql`
     CHECKING_ANSWER
     "The review rejected the draft; it's being rewritten (then reviewed again)."
     IMPROVING_ANSWER
+    "The answer is done and the PDF or Word file the user asked for is being made from it."
+    CREATING_FILE
   }
 
   type AgentStreamEvent {
@@ -78,6 +91,13 @@ export const ragTypeDefs = gql`
 
     "Ingests raw pasted text/markdown without a file upload."
     ingestText(input: IngestTextInput!): IngestResult!
+
+    """
+    Adds a public link to the knowledge base: a document (PDF, Word, Excel, CSV, text, Markdown),
+    a Google Doc/Sheet/Slides or Google Drive/Dropbox/GitHub file, or a web page's text. Links that
+    need signing in fail with "This link isn't publicly accessible."
+    """
+    ingestUrl(url: String!): IngestResult!
 
     deleteIngestedDocument(documentId: ID!): Boolean!
 

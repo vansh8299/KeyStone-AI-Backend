@@ -32,6 +32,8 @@ import {
 import { runInBackground, trackBackground } from "../../lib/backgroundTasks";
 import { moduleLogger } from "../../lib/logger";
 import { toClientError } from "../../shared/errorHandling";
+import { detectFileRequest, FILE_FORMAT_LABELS } from "./responseFiles/fileRequest";
+import { createResponseFile, type ResponseFile } from "./responseFiles/responseFile";
 
 const log = moduleLogger("chat");
 
@@ -62,6 +64,8 @@ export interface ChatTurnInput {
 
 export interface ChatTurnResult {
   answer: string;
+  /** PDF or Word files made for this reply (the user asked for one). */
+  files: ResponseFile[];
   toolsUsed: string[];
   conversationId: string;
   needsHumanInput: boolean;
@@ -229,17 +233,20 @@ async function runChatTurnInner({
   const documentIds = [
     ...new Set([...documentIdsOf([{ metadata: { attachments } }]), ...documentIdsOf(branch)]),
   ].slice(0, limits.documentsPerConversation);
-  const [shortTerm, pastConversations, documents, knowledgeBaseDocumentIds, account] = await Promise.all([
+  const [shortTerm, pastConversations, documents, knowledgeBaseDocumentIds, account, fileRequest] = await Promise.all([
     buildShortTermMemory(branch),
     retrievePastConversations(userId, convoId, agentQuestion),
     attachmentService.documentContext(documentIds, agentQuestion),
     // Fetched now, alongside the memory, rather than mid-answer by the knowledge-base search.
     documentService.idsForUser(userId),
     prisma.user.findUnique({ where: { id: userId }, select: { name: true } }),
+    // Whether they want the reply as a PDF or Word file (only checked when one is mentioned).
+    detectFileRequest(agentQuestion),
   ]);
   const memory = {
     userId,
     userName: account?.name?.trim() || undefined,
+    outputFile: fileRequest?.format,
     ...shortTerm,
     pastConversations,
     attachedImages: formatImagesForPrompt(attachments),
@@ -303,6 +310,25 @@ async function runChatTurnInner({
   const traceMetadata = trace.runId ? { langsmithRunId: trace.runId } : {};
   await userMessageSaved;
 
+  // The file is made from the final, reviewed answer, so a withheld answer gets none.
+  let files: ResponseFile[] = [];
+  let fileError: string | undefined;
+  if (
+    fileRequest &&
+    result.status === "completed" &&
+    result.guardrail.status !== "withheld" &&
+    result.answer.trim() &&
+    !isFileRefusal(result.answer)
+  ) {
+    onStatus?.("CREATING_FILE");
+    try {
+      files = [await createResponseFile({ userId, conversationId: convoId, markdown: result.answer, request: fileRequest })];
+    } catch (err) {
+      log.error({ err, conversationId: convoId, format: fileRequest.format }, "creating a response file failed");
+      fileError = `The ${FILE_FORMAT_LABELS[fileRequest.format]} couldn't be created. Ask again to retry.`;
+    }
+  }
+
   const interrupted = result.status === "interrupted";
   const { answer, toolsUsed, source, metadata } =
     result.status === "interrupted"
@@ -323,6 +349,8 @@ async function runChatTurnInner({
           metadata: {
             toolsUsed: result.toolsUsed,
             guardrail: { ...result.guardrail, issues: [...result.guardrail.issues] },
+            ...(files.length > 0 ? { files: files.map((f) => ({ ...f })) } : {}),
+            ...(fileError ? { fileError } : {}),
             ...traceMetadata,
           },
         };
@@ -370,7 +398,21 @@ async function runChatTurnInner({
     review: result.status === "completed" ? result.guardrail.status : null,
     userMessageId,
     assistantMessageId,
+    files,
   };
+}
+
+/**
+ * A reply that only says files can't be made ("I can't generate PDFs, but you can…") rather than
+ * being the document: turning it into a PDF would hand the user a file of the refusal.
+ */
+function isFileRefusal(answer: string): boolean {
+  const start = answer.slice(0, 300);
+  return (
+    !/^\s*#/m.test(answer.slice(0, 200)) &&
+    /\b(can(?:no|')t|unable to|not able to|don'?t have the ability)\b/i.test(start) &&
+    /\b(pdf|word|docx?|files?|download)/i.test(start)
+  );
 }
 
 function questionForFilesOnly(attachments: MessageAttachment[]): string {
