@@ -6,6 +6,7 @@ import zlib from "node:zlib";
 import type { LookupFunction } from "node:net";
 import { limits } from "../../../config/limits";
 import { moduleLogger } from "../../../lib/logger";
+import { launchBrowser } from "../../../lib/browser";
 
 const log = moduleLogger("link-fetcher");
 
@@ -322,9 +323,7 @@ function looksLikeLoginPage(html: string): boolean {
 
 /** Readable text of a web page: its main content without menus, scripts or styles. */
 async function pageText(html: string): Promise<{ title: string; text: string }> {
-  const { default: puppeteer } = await import("puppeteer");
-  const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
-  const browser = await puppeteer.launch({ headless: true, args: runningAsRoot ? ["--no-sandbox"] : [] });
+  const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
     // Only the downloaded HTML is rendered: no scripts, and no requests (images, frames, …) leave the server.

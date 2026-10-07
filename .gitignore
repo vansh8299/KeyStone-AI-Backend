@@ -9,3 +9,5 @@ dist
 !.env.example
 # Archives can contain copies of .env / secrets (prisma.zip did).
 *.zip
+# Puppeteer's Chrome download on Render (see .puppeteerrc.cjs)
+.cache/
