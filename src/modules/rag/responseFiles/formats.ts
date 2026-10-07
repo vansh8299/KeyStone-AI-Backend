@@ -139,9 +139,11 @@ export function fileInstruction(format: FileFormat): string {
         `and offered to them as a download, so write the complete document itself in Markdown: a ` +
         `title as a "#" heading, then the content with "##" sections, lists and tables as needed. If ` +
         `they refer to something already in the conversation ("this", "that", "the above", "your ` +
-        `last answer"), the file must contain THAT content: reproduce your earlier answer faithfully ` +
-        `(same items, same order, same facts), completing it if it was cut off — don't write new or ` +
-        `different content. The same goes for attached or remembered content they ask for as a file. ` +
+        `last answer"), the file must be built from THAT content: reproduce your earlier answer ` +
+        `faithfully (same items, same order, same facts), completing it if it was cut off — unless ` +
+        `they ask for it changed (a short version, a summary, translated, reformatted), in which case ` +
+        `make that change to the same content without adding new facts. The same goes for attached ` +
+        `or remembered content they ask for as a file. ` +
         `${never} Don't add chat around the document (no "Here is your ${label}").`
       );
   }
