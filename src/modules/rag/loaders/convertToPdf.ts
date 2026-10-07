@@ -59,7 +59,7 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-async function renderHtmlToPdf(html: string): Promise<Buffer> {
+export async function renderHtmlToPdf(html: string): Promise<Buffer> {
   const { default: puppeteer } = await import("puppeteer");
 
   const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;

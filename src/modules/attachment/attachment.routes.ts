@@ -26,7 +26,10 @@ attachmentRouter.get("/attachments/:id", cookieParser(), async (req, res, next) 
     res.set({
       "Content-Type": attachment.mimeType,
       "Content-Length": String(attachment.data.length),
-      "Content-Disposition": `${attachment.kind === "image" ? "inline" : "attachment"}; filename="${encodeURIComponent(attachment.filename)}"`,
+      "Content-Disposition":
+        `${attachment.kind === "image" ? "inline" : "attachment"}; ` +
+        `filename="${attachment.filename.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; ` +
+        `filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
       "Cache-Control": "private, max-age=86400, immutable",
       "X-Content-Type-Options": "nosniff",
       // Opened directly, an uploaded file gets no scripts, no network and an isolated origin.

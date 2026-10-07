@@ -48,6 +48,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "csv-parse": "^7.0.2",
+    "docx": "^9.9.0",
     "dotenv": "^16.4.5",
     "express": "^5.1.0",
     "graphql": "^16.11.0",

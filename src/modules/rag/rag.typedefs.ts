@@ -31,6 +31,17 @@ export const ragTypeDefs = gql`
     userMessageId: ID!
     "The saved assistant reply."
     assistantMessageId: ID!
+    "PDF or Word files made for this reply, when the user asked for one. Download: GET /attachments/:id."
+    files: [ResponseFile!]!
+  }
+
+  type ResponseFile {
+    id: ID!
+    filename: String!
+    mimeType: String!
+    size: Int!
+    "pdf or docx"
+    format: String!
   }
 
   enum AgentStreamEventType {
@@ -51,6 +62,8 @@ export const ragTypeDefs = gql`
     CHECKING_ANSWER
     "The review rejected the draft; it's being rewritten (then reviewed again)."
     IMPROVING_ANSWER
+    "The answer is done and the PDF or Word file the user asked for is being made from it."
+    CREATING_FILE
   }
 
   type AgentStreamEvent {

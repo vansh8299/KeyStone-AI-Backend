@@ -83,12 +83,17 @@ export const limits = {
   ingestionLeaseMs: 5 * 60_000, // renewed every third of this while a worker is on the job
   ingestionIdlePollMs: env.ingestionIdlePollMs,
   ingestionErrorBackoffMs: 15_000,
+  /** Dropped database connections in a row (e.g. a sleeping serverless database) before it's logged as an error. */
+  ingestionConnectionErrorsBeforeAlert: 4,
 
   guardrailMaxRevisions: 2,
   guardrailAnswerMaxChars: 8_000,
 
   answerMaxTokens: env.llmMaxOutputTokens,
+  /** Replies that become a PDF or Word file are whole documents, so they may run much longer. */
+  documentAnswerMaxTokens: Math.max(env.llmMaxOutputTokens, 8_192),
   classifyMaxTokens: 10,
+  fileRequestMaxTokens: 60,
   ambiguityCheckMaxTokens: 300,
   rewriteMaxTokens: 200,
   titleMaxTokens: 30,
